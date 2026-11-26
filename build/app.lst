@@ -1,0 +1,569 @@
+ARM GAS  C:\Users\cks\AppData\Local\Temp\cce4b20f.s 			page 1
+
+
+   1              		.cpu cortex-m4
+   2              		.arch armv7e-m
+   3              		.fpu fpv4-sp-d16
+   4              		.eabi_attribute 27, 1
+   5              		.eabi_attribute 28, 1
+   6              		.eabi_attribute 20, 1
+   7              		.eabi_attribute 21, 1
+   8              		.eabi_attribute 23, 3
+   9              		.eabi_attribute 24, 1
+  10              		.eabi_attribute 25, 1
+  11              		.eabi_attribute 26, 1
+  12              		.eabi_attribute 30, 1
+  13              		.eabi_attribute 34, 1
+  14              		.eabi_attribute 18, 4
+  15              		.file	"app.c"
+  16              		.text
+  17              	.Ltext0:
+  18              		.cfi_sections	.debug_frame
+  19              		.file 1 "Core/Src/app.c"
+  20              		.section	.text.App_ControlTimerInit,"ax",%progbits
+  21              		.align	1
+  22              		.syntax unified
+  23              		.thumb
+  24              		.thumb_func
+  26              	App_ControlTimerInit:
+  27              	.LFB134:
+   1:Core/Src/app.c **** /**
+   2:Core/Src/app.c ****   ******************************************************************************
+   3:Core/Src/app.c ****   * @file    app.c
+   4:Core/Src/app.c ****   * @brief   应用层：1 kHz 控制节拍 + 定时切换目标位置
+   5:Core/Src/app.c ****   ******************************************************************************
+   6:Core/Src/app.c ****   * 本文件实现两件事：
+   7:Core/Src/app.c ****   *
+   8:Core/Src/app.c ****   *   1. 用 TIM6 产生 1 kHz 中断，在中断里做双环 PID 计算并通过 CAN 发电流；
+   9:Core/Src/app.c ****   *      （不用串口、不用外部信号，纯定时器节拍）
+  10:Core/Src/app.c ****   *
+  11:Core/Src/app.c ****   *   2. 在主循环里每隔 TARGET_INTERVAL_MS 毫秒，把目标角度切换到
+  12:Core/Src/app.c ****   *      kTargetsDeg[] 里的下一个位置，循环往复。
+  13:Core/Src/app.c ****   *
+  14:Core/Src/app.c ****   * 想改“转到哪些位置 / 多久换一个”，只需要改下面两个地方：
+  15:Core/Src/app.c ****   *   - kTargetsDeg[]      目标角度表（单位：°，相对上电位置）
+  16:Core/Src/app.c ****   *   - TARGET_INTERVAL_MS 每个位置停留的时间（单位：ms）
+  17:Core/Src/app.c ****   ******************************************************************************
+  18:Core/Src/app.c ****   */
+  19:Core/Src/app.c **** 
+  20:Core/Src/app.c **** #include "app.h"
+  21:Core/Src/app.c **** #include "main.h"
+  22:Core/Src/app.c **** 
+  23:Core/Src/app.c **** /* ==========================================================================
+  24:Core/Src/app.c ****  *                              用户可修改的配置
+  25:Core/Src/app.c ****  * ========================================================================== */
+  26:Core/Src/app.c **** 
+  27:Core/Src/app.c **** /* 每个目标位置停留的时间：3000 ms = 3 秒换一个位置 */
+  28:Core/Src/app.c **** #define TARGET_INTERVAL_MS     3000U
+  29:Core/Src/app.c **** 
+  30:Core/Src/app.c **** /* 目标位置表（输出轴角度，单位 °，相对上电位置；正负对应两个方向）
+  31:Core/Src/app.c ****  * 这里演示：0° → 90° → 0° → -90° → 0° ... 循环。
+ARM GAS  C:\Users\cks\AppData\Local\Temp\cce4b20f.s 			page 2
+
+
+  32:Core/Src/app.c ****  * 想转别的角度直接改这个数组，比如 { 0, 45, 180, 270 }。 */
+  33:Core/Src/app.c **** static const float kTargetsDeg[] =
+  34:Core/Src/app.c **** {
+  35:Core/Src/app.c ****     0.0f,
+  36:Core/Src/app.c ****     90.0f,
+  37:Core/Src/app.c ****     0.0f,
+  38:Core/Src/app.c ****     -90.0f
+  39:Core/Src/app.c **** };
+  40:Core/Src/app.c **** 
+  41:Core/Src/app.c **** #define TARGET_COUNT  (sizeof(kTargetsDeg) / sizeof(kTargetsDeg[0]))
+  42:Core/Src/app.c **** 
+  43:Core/Src/app.c **** /* ==========================================================================
+  44:Core/Src/app.c ****  *                              私有变量
+  45:Core/Src/app.c ****  * ========================================================================== */
+  46:Core/Src/app.c **** 
+  47:Core/Src/app.c **** /* 全局电机对象（ID = 1，对应 C620 拨码 1，反馈帧 0x201） */
+  48:Core/Src/app.c **** Motor_t g_motor;
+  49:Core/Src/app.c **** 
+  50:Core/Src/app.c **** /* 上一次切换目标的时刻（HAL_GetTick 计数） */
+  51:Core/Src/app.c **** static uint32_t s_last_target_tick = 0U;
+  52:Core/Src/app.c **** 
+  53:Core/Src/app.c **** /* 当前目标在 kTargetsDeg[] 里的下标 */
+  54:Core/Src/app.c **** static uint32_t s_target_index = 0U;
+  55:Core/Src/app.c **** 
+  56:Core/Src/app.c **** /* 是否已经开始按节拍运动（要等第一帧反馈到了才开始，避免上电乱冲）
+  57:Core/Src/app.c **** static uint8_t s_motion_started = 0U;
+  58:Core/Src/app.c **** 
+  59:Core/Src/app.c **** /* ==========================================================================
+  60:Core/Src/app.c ****  *                              私有函数
+  61:Core/Src/app.c ****  * ========================================================================== */
+  62:Core/Src/app.c **** 
+  63:Core/Src/app.c **** /**
+  64:Core/Src/app.c ****   * @brief  初始化 TIM6，产生 1 kHz 更新中断
+  65:Core/Src/app.c ****   * @note   APB1 定时器时钟 = 84 MHz（系统 168 MHz，APB1 四分频 42 MHz，
+  66:Core/Src/app.c ****   *         定时器时钟再乘 2）。84 分频得到 1 MHz，再计 1000 个数就是 1 ms。
+  67:Core/Src/app.c ****   */
+  68:Core/Src/app.c **** static void App_ControlTimerInit(void)
+  69:Core/Src/app.c **** {
+  28              		.loc 1 69 1 view -0
+  29              		.cfi_startproc
+  30              		@ args = 0, pretend = 0, frame = 8
+  31              		@ frame_needed = 0, uses_anonymous_args = 0
+  32 0000 00B5     		push	{lr}
+  33              	.LCFI0:
+  34              		.cfi_def_cfa_offset 4
+  35              		.cfi_offset 14, -4
+  36 0002 83B0     		sub	sp, sp, #12
+  37              	.LCFI1:
+  38              		.cfi_def_cfa_offset 16
+  70:Core/Src/app.c ****     __HAL_RCC_TIM6_CLK_ENABLE();
+  39              		.loc 1 70 5 view .LVU1
+  40              	.LBB2:
+  41              		.loc 1 70 5 view .LVU2
+  42 0004 0022     		movs	r2, #0
+  43 0006 0192     		str	r2, [sp, #4]
+  44              		.loc 1 70 5 view .LVU3
+  45 0008 0E4B     		ldr	r3, .L3
+ARM GAS  C:\Users\cks\AppData\Local\Temp\cce4b20f.s 			page 3
+
+
+  46 000a 196C     		ldr	r1, [r3, #64]
+  47 000c 41F01001 		orr	r1, r1, #16
+  48 0010 1964     		str	r1, [r3, #64]
+  49              		.loc 1 70 5 view .LVU4
+  50 0012 1B6C     		ldr	r3, [r3, #64]
+  51 0014 03F01003 		and	r3, r3, #16
+  52 0018 0193     		str	r3, [sp, #4]
+  53              		.loc 1 70 5 view .LVU5
+  54 001a 019B     		ldr	r3, [sp, #4]
+  55              	.LBE2:
+  56              		.loc 1 70 5 view .LVU6
+  71:Core/Src/app.c **** 
+  72:Core/Src/app.c ****     TIM6->PSC = 84U - 1U;        /* 84 MHz / 84 = 1 MHz */
+  57              		.loc 1 72 5 view .LVU7
+  58              		.loc 1 72 15 is_stmt 0 view .LVU8
+  59 001c 0A4B     		ldr	r3, .L3+4
+  60 001e 5321     		movs	r1, #83
+  61 0020 9962     		str	r1, [r3, #40]
+  73:Core/Src/app.c ****     TIM6->ARR = 1000U - 1U;      /* 1 MHz / 1000 = 1 kHz */
+  62              		.loc 1 73 5 is_stmt 1 view .LVU9
+  63              		.loc 1 73 15 is_stmt 0 view .LVU10
+  64 0022 40F2E731 		movw	r1, #999
+  65 0026 D962     		str	r1, [r3, #44]
+  74:Core/Src/app.c **** 
+  75:Core/Src/app.c ****     /* 产生一次更新事件，立刻把 PSC/ARR 装载进影子寄存器 */
+  76:Core/Src/app.c ****     TIM6->EGR = TIM_EGR_UG;
+  66              		.loc 1 76 5 is_stmt 1 view .LVU11
+  67              		.loc 1 76 15 is_stmt 0 view .LVU12
+  68 0028 0121     		movs	r1, #1
+  69 002a 5961     		str	r1, [r3, #20]
+  77:Core/Src/app.c ****     TIM6->SR = 0U;               /* 清掉刚才 UG 产生的更新标志 */
+  70              		.loc 1 77 5 is_stmt 1 view .LVU13
+  71              		.loc 1 77 14 is_stmt 0 view .LVU14
+  72 002c 1A61     		str	r2, [r3, #16]
+  78:Core/Src/app.c **** 
+  79:Core/Src/app.c ****     TIM6->DIER = TIM_DIER_UIE;   /* 允许更新中断 */
+  73              		.loc 1 79 5 is_stmt 1 view .LVU15
+  74              		.loc 1 79 16 is_stmt 0 view .LVU16
+  75 002e D960     		str	r1, [r3, #12]
+  80:Core/Src/app.c ****     TIM6->CR1 = TIM_CR1_CEN;     /* 启动定时器 */
+  76              		.loc 1 80 5 is_stmt 1 view .LVU17
+  77              		.loc 1 80 15 is_stmt 0 view .LVU18
+  78 0030 1960     		str	r1, [r3]
+  81:Core/Src/app.c **** 
+  82:Core/Src/app.c ****     /* 优先级 2：低于 CAN 接收（1），保证反馈解析不被控制任务打断 */
+  83:Core/Src/app.c ****     HAL_NVIC_SetPriority(TIM6_DAC_IRQn, 2, 0);
+  79              		.loc 1 83 5 is_stmt 1 view .LVU19
+  80 0032 0221     		movs	r1, #2
+  81 0034 3620     		movs	r0, #54
+  82 0036 FFF7FEFF 		bl	HAL_NVIC_SetPriority
+  83              	.LVL0:
+  84:Core/Src/app.c ****     HAL_NVIC_EnableIRQ(TIM6_DAC_IRQn);
+  84              		.loc 1 84 5 view .LVU20
+  85 003a 3620     		movs	r0, #54
+  86 003c FFF7FEFF 		bl	HAL_NVIC_EnableIRQ
+  87              	.LVL1:
+  85:Core/Src/app.c **** }
+ARM GAS  C:\Users\cks\AppData\Local\Temp\cce4b20f.s 			page 4
+
+
+  88              		.loc 1 85 1 is_stmt 0 view .LVU21
+  89 0040 03B0     		add	sp, sp, #12
+  90              	.LCFI2:
+  91              		.cfi_def_cfa_offset 4
+  92              		@ sp needed
+  93 0042 00BD     		pop	{pc}
+  94              	.L4:
+  95              		.align	2
+  96              	.L3:
+  97 0044 00380240 		.word	1073887232
+  98 0048 00100040 		.word	1073745920
+  99              		.cfi_endproc
+ 100              	.LFE134:
+ 102              		.section	.text.App_Init,"ax",%progbits
+ 103              		.align	1
+ 104              		.global	App_Init
+ 105              		.syntax unified
+ 106              		.thumb
+ 107              		.thumb_func
+ 109              	App_Init:
+ 110              	.LFB135:
+  86:Core/Src/app.c **** 
+  87:Core/Src/app.c **** /* ==========================================================================
+  88:Core/Src/app.c ****  *                              对外接口
+  89:Core/Src/app.c ****  * ========================================================================== */
+  90:Core/Src/app.c **** 
+  91:Core/Src/app.c **** void App_Init(void)
+  92:Core/Src/app.c **** {
+ 111              		.loc 1 92 1 is_stmt 1 view -0
+ 112              		.cfi_startproc
+ 113              		@ args = 0, pretend = 0, frame = 0
+ 114              		@ frame_needed = 0, uses_anonymous_args = 0
+ 115 0000 08B5     		push	{r3, lr}
+ 116              	.LCFI3:
+ 117              		.cfi_def_cfa_offset 8
+ 118              		.cfi_offset 3, -8
+ 119              		.cfi_offset 14, -4
+  93:Core/Src/app.c ****     /* 1. 初始化电机对象（ID=1） */
+  94:Core/Src/app.c ****     Motor_Init(&g_motor, 1U);
+ 120              		.loc 1 94 5 view .LVU23
+ 121 0002 0121     		movs	r1, #1
+ 122 0004 0848     		ldr	r0, .L7
+ 123 0006 FFF7FEFF 		bl	Motor_Init
+ 124              	.LVL2:
+  95:Core/Src/app.c **** 
+  96:Core/Src/app.c ****     /* 2. 配置 CAN 滤波器、启动 CAN、打开接收中断 */
+  97:Core/Src/app.c ****     Motor_CAN_Init();
+ 125              		.loc 1 97 5 view .LVU24
+ 126 000a FFF7FEFF 		bl	Motor_CAN_Init
+ 127              	.LVL3:
+  98:Core/Src/app.c **** 
+  99:Core/Src/app.c ****     /* 3. 启动 1 kHz 控制定时器 */
+ 100:Core/Src/app.c ****     App_ControlTimerInit();
+ 128              		.loc 1 100 5 view .LVU25
+ 129 000e FFF7FEFF 		bl	App_ControlTimerInit
+ 130              	.LVL4:
+ 101:Core/Src/app.c **** 
+ARM GAS  C:\Users\cks\AppData\Local\Temp\cce4b20f.s 			page 5
+
+
+ 102:Core/Src/app.c ****     /* 4. 状态复位 */
+ 103:Core/Src/app.c ****     s_target_index = 0U;
+ 131              		.loc 1 103 5 view .LVU26
+ 132              		.loc 1 103 20 is_stmt 0 view .LVU27
+ 133 0012 0023     		movs	r3, #0
+ 134 0014 054A     		ldr	r2, .L7+4
+ 135 0016 1360     		str	r3, [r2]
+ 104:Core/Src/app.c ****     s_motion_started = 0U;
+ 136              		.loc 1 104 5 is_stmt 1 view .LVU28
+ 137              		.loc 1 104 22 is_stmt 0 view .LVU29
+ 138 0018 054A     		ldr	r2, .L7+8
+ 139 001a 1370     		strb	r3, [r2]
+ 105:Core/Src/app.c ****     s_last_target_tick = HAL_GetTick();
+ 140              		.loc 1 105 5 is_stmt 1 view .LVU30
+ 141              		.loc 1 105 26 is_stmt 0 view .LVU31
+ 142 001c FFF7FEFF 		bl	HAL_GetTick
+ 143              	.LVL5:
+ 144              		.loc 1 105 24 discriminator 1 view .LVU32
+ 145 0020 044B     		ldr	r3, .L7+12
+ 146 0022 1860     		str	r0, [r3]
+ 106:Core/Src/app.c **** }
+ 147              		.loc 1 106 1 view .LVU33
+ 148 0024 08BD     		pop	{r3, pc}
+ 149              	.L8:
+ 150 0026 00BF     		.align	2
+ 151              	.L7:
+ 152 0028 00000000 		.word	g_motor
+ 153 002c 00000000 		.word	s_target_index
+ 154 0030 00000000 		.word	s_motion_started
+ 155 0034 00000000 		.word	s_last_target_tick
+ 156              		.cfi_endproc
+ 157              	.LFE135:
+ 159              		.section	.text.App_Loop,"ax",%progbits
+ 160              		.align	1
+ 161              		.global	App_Loop
+ 162              		.syntax unified
+ 163              		.thumb
+ 164              		.thumb_func
+ 166              	App_Loop:
+ 167              	.LFB136:
+ 107:Core/Src/app.c **** 
+ 108:Core/Src/app.c **** void App_Loop(void)
+ 109:Core/Src/app.c **** {
+ 168              		.loc 1 109 1 is_stmt 1 view -0
+ 169              		.cfi_startproc
+ 170              		@ args = 0, pretend = 0, frame = 0
+ 171              		@ frame_needed = 0, uses_anonymous_args = 0
+ 172 0000 08B5     		push	{r3, lr}
+ 173              	.LCFI4:
+ 174              		.cfi_def_cfa_offset 8
+ 175              		.cfi_offset 3, -8
+ 176              		.cfi_offset 14, -4
+ 110:Core/Src/app.c ****     /* 没收到反馈之前什么都不做（此时 Motor_Update 也会输出 0） */
+ 111:Core/Src/app.c ****     if (Motor_IsOnline(&g_motor) == 0U)
+ 177              		.loc 1 111 5 view .LVU35
+ 178              		.loc 1 111 9 is_stmt 0 view .LVU36
+ 179 0002 1848     		ldr	r0, .L15
+ARM GAS  C:\Users\cks\AppData\Local\Temp\cce4b20f.s 			page 6
+
+
+ 180 0004 FFF7FEFF 		bl	Motor_IsOnline
+ 181              	.LVL6:
+ 182              		.loc 1 111 8 discriminator 1 view .LVU37
+ 183 0008 58B1     		cbz	r0, .L9
+ 112:Core/Src/app.c ****     {
+ 113:Core/Src/app.c ****         return;
+ 114:Core/Src/app.c ****     }
+ 115:Core/Src/app.c **** 
+ 116:Core/Src/app.c ****     /* 第一次收到反馈：从表中第 0 个位置开始，并重新计时 */
+ 117:Core/Src/app.c ****     if (s_motion_started == 0U)
+ 184              		.loc 1 117 5 is_stmt 1 view .LVU38
+ 185              		.loc 1 117 26 is_stmt 0 view .LVU39
+ 186 000a 174B     		ldr	r3, .L15+4
+ 187 000c 1B78     		ldrb	r3, [r3]	@ zero_extendqisi2
+ 188              		.loc 1 117 8 view .LVU40
+ 189 000e 4BB1     		cbz	r3, .L13
+ 118:Core/Src/app.c ****     {
+ 119:Core/Src/app.c ****         s_motion_started = 1U;
+ 120:Core/Src/app.c ****         s_last_target_tick = HAL_GetTick();
+ 121:Core/Src/app.c ****         Motor_SetTarget(&g_motor, kTargetsDeg[0]);
+ 122:Core/Src/app.c ****         return;
+ 123:Core/Src/app.c ****     }
+ 124:Core/Src/app.c **** 
+ 125:Core/Src/app.c ****     /* 到时间了：切换到下一个目标位置 */
+ 126:Core/Src/app.c ****     if ((HAL_GetTick() - s_last_target_tick) >= TARGET_INTERVAL_MS)
+ 190              		.loc 1 126 5 is_stmt 1 view .LVU41
+ 191              		.loc 1 126 10 is_stmt 0 view .LVU42
+ 192 0010 FFF7FEFF 		bl	HAL_GetTick
+ 193              	.LVL7:
+ 194              		.loc 1 126 24 discriminator 1 view .LVU43
+ 195 0014 154B     		ldr	r3, .L15+8
+ 196 0016 1B68     		ldr	r3, [r3]
+ 197 0018 C01A     		subs	r0, r0, r3
+ 198              		.loc 1 126 8 discriminator 1 view .LVU44
+ 199 001a 40F6B733 		movw	r3, #2999
+ 200 001e 9842     		cmp	r0, r3
+ 201 0020 0DD8     		bhi	.L14
+ 202              	.L9:
+ 127:Core/Src/app.c ****     {
+ 128:Core/Src/app.c ****         s_last_target_tick = HAL_GetTick();
+ 129:Core/Src/app.c ****         s_target_index = (s_target_index + 1U) % TARGET_COUNT;
+ 130:Core/Src/app.c ****         Motor_SetTarget(&g_motor, kTargetsDeg[s_target_index]);
+ 131:Core/Src/app.c ****     }
+ 132:Core/Src/app.c **** }
+ 203              		.loc 1 132 1 view .LVU45
+ 204 0022 08BD     		pop	{r3, pc}
+ 205              	.L13:
+ 119:Core/Src/app.c ****         s_last_target_tick = HAL_GetTick();
+ 206              		.loc 1 119 9 is_stmt 1 view .LVU46
+ 119:Core/Src/app.c ****         s_last_target_tick = HAL_GetTick();
+ 207              		.loc 1 119 26 is_stmt 0 view .LVU47
+ 208 0024 104B     		ldr	r3, .L15+4
+ 209 0026 0122     		movs	r2, #1
+ 210 0028 1A70     		strb	r2, [r3]
+ 120:Core/Src/app.c ****         Motor_SetTarget(&g_motor, kTargetsDeg[0]);
+ 211              		.loc 1 120 9 is_stmt 1 view .LVU48
+ 120:Core/Src/app.c ****         Motor_SetTarget(&g_motor, kTargetsDeg[0]);
+ARM GAS  C:\Users\cks\AppData\Local\Temp\cce4b20f.s 			page 7
+
+
+ 212              		.loc 1 120 30 is_stmt 0 view .LVU49
+ 213 002a FFF7FEFF 		bl	HAL_GetTick
+ 214              	.LVL8:
+ 120:Core/Src/app.c ****         Motor_SetTarget(&g_motor, kTargetsDeg[0]);
+ 215              		.loc 1 120 28 discriminator 1 view .LVU50
+ 216 002e 0F4B     		ldr	r3, .L15+8
+ 217 0030 1860     		str	r0, [r3]
+ 121:Core/Src/app.c ****         return;
+ 218              		.loc 1 121 9 is_stmt 1 view .LVU51
+ 219 0032 9FED0F0A 		vldr.32	s0, .L15+12
+ 220 0036 0B48     		ldr	r0, .L15
+ 221 0038 FFF7FEFF 		bl	Motor_SetTarget
+ 222              	.LVL9:
+ 122:Core/Src/app.c ****     }
+ 223              		.loc 1 122 9 view .LVU52
+ 224 003c F1E7     		b	.L9
+ 225              	.L14:
+ 128:Core/Src/app.c ****         s_target_index = (s_target_index + 1U) % TARGET_COUNT;
+ 226              		.loc 1 128 9 view .LVU53
+ 128:Core/Src/app.c ****         s_target_index = (s_target_index + 1U) % TARGET_COUNT;
+ 227              		.loc 1 128 30 is_stmt 0 view .LVU54
+ 228 003e FFF7FEFF 		bl	HAL_GetTick
+ 229              	.LVL10:
+ 128:Core/Src/app.c ****         s_target_index = (s_target_index + 1U) % TARGET_COUNT;
+ 230              		.loc 1 128 28 discriminator 1 view .LVU55
+ 231 0042 0A4B     		ldr	r3, .L15+8
+ 232 0044 1860     		str	r0, [r3]
+ 129:Core/Src/app.c ****         Motor_SetTarget(&g_motor, kTargetsDeg[s_target_index]);
+ 233              		.loc 1 129 9 is_stmt 1 view .LVU56
+ 129:Core/Src/app.c ****         Motor_SetTarget(&g_motor, kTargetsDeg[s_target_index]);
+ 234              		.loc 1 129 48 is_stmt 0 view .LVU57
+ 235 0046 0B4A     		ldr	r2, .L15+16
+ 236 0048 1368     		ldr	r3, [r2]
+ 129:Core/Src/app.c ****         Motor_SetTarget(&g_motor, kTargetsDeg[s_target_index]);
+ 237              		.loc 1 129 42 view .LVU58
+ 238 004a 0133     		adds	r3, r3, #1
+ 129:Core/Src/app.c ****         Motor_SetTarget(&g_motor, kTargetsDeg[s_target_index]);
+ 239              		.loc 1 129 48 view .LVU59
+ 240 004c 03F00303 		and	r3, r3, #3
+ 129:Core/Src/app.c ****         Motor_SetTarget(&g_motor, kTargetsDeg[s_target_index]);
+ 241              		.loc 1 129 24 view .LVU60
+ 242 0050 1360     		str	r3, [r2]
+ 130:Core/Src/app.c ****     }
+ 243              		.loc 1 130 9 is_stmt 1 view .LVU61
+ 130:Core/Src/app.c ****     }
+ 244              		.loc 1 130 46 is_stmt 0 view .LVU62
+ 245 0052 094A     		ldr	r2, .L15+20
+ 246 0054 02EB8303 		add	r3, r2, r3, lsl #2
+ 130:Core/Src/app.c ****     }
+ 247              		.loc 1 130 9 view .LVU63
+ 248 0058 93ED000A 		vldr.32	s0, [r3]
+ 249 005c 0148     		ldr	r0, .L15
+ 250 005e FFF7FEFF 		bl	Motor_SetTarget
+ 251              	.LVL11:
+ 252 0062 DEE7     		b	.L9
+ 253              	.L16:
+ 254              		.align	2
+ARM GAS  C:\Users\cks\AppData\Local\Temp\cce4b20f.s 			page 8
+
+
+ 255              	.L15:
+ 256 0064 00000000 		.word	g_motor
+ 257 0068 00000000 		.word	s_motion_started
+ 258 006c 00000000 		.word	s_last_target_tick
+ 259 0070 00000000 		.word	0
+ 260 0074 00000000 		.word	s_target_index
+ 261 0078 00000000 		.word	kTargetsDeg
+ 262              		.cfi_endproc
+ 263              	.LFE136:
+ 265              		.section	.text.App_ControlTick,"ax",%progbits
+ 266              		.align	1
+ 267              		.global	App_ControlTick
+ 268              		.syntax unified
+ 269              		.thumb
+ 270              		.thumb_func
+ 272              	App_ControlTick:
+ 273              	.LFB137:
+ 133:Core/Src/app.c **** 
+ 134:Core/Src/app.c **** void App_ControlTick(void)
+ 135:Core/Src/app.c **** {
+ 274              		.loc 1 135 1 is_stmt 1 view -0
+ 275              		.cfi_startproc
+ 276              		@ args = 0, pretend = 0, frame = 0
+ 277              		@ frame_needed = 0, uses_anonymous_args = 0
+ 278 0000 10B5     		push	{r4, lr}
+ 279              	.LCFI5:
+ 280              		.cfi_def_cfa_offset 8
+ 281              		.cfi_offset 4, -8
+ 282              		.cfi_offset 14, -4
+ 136:Core/Src/app.c ****     /* 双环 PID：位置环 -> 速度环 -> out_current */
+ 137:Core/Src/app.c ****     Motor_Update(&g_motor);
+ 283              		.loc 1 137 5 view .LVU65
+ 284 0002 054C     		ldr	r4, .L21
+ 285 0004 2046     		mov	r0, r4
+ 286 0006 FFF7FEFF 		bl	Motor_Update
+ 287              	.LVL12:
+ 138:Core/Src/app.c **** 
+ 139:Core/Src/app.c ****     /* 收到过反馈才开始发控制帧：
+ 140:Core/Src/app.c ****      * 如果 C620 还没上电，总线上没有任何节点回应 ACK，1 kHz 持续发送会让
+ 141:Core/Src/app.c ****      * CAN 控制器很快进入 bus-off；等第一帧反馈到了再发，就不会有这个问�
+ 142:Core/Src/app.c ****      * 也就不用关心“先给板子上电还是先给 C620 上电”。 */
+ 143:Core/Src/app.c ****     if (g_motor.inited != 0U)
+ 288              		.loc 1 143 5 view .LVU66
+ 289              		.loc 1 143 16 is_stmt 0 view .LVU67
+ 290 000a A37C     		ldrb	r3, [r4, #18]	@ zero_extendqisi2
+ 291              		.loc 1 143 8 view .LVU68
+ 292 000c 03B9     		cbnz	r3, .L20
+ 293              	.L17:
+ 144:Core/Src/app.c ****     {
+ 145:Core/Src/app.c ****         /* 把 4 路电流打包成 0x200 发出去（只配了 1 个电机，其余补 0） */
+ 146:Core/Src/app.c ****         Motor_SendAll();
+ 147:Core/Src/app.c ****     }
+ 148:Core/Src/app.c **** }
+ 294              		.loc 1 148 1 view .LVU69
+ 295 000e 10BD     		pop	{r4, pc}
+ 296              	.L20:
+ 146:Core/Src/app.c ****     }
+ARM GAS  C:\Users\cks\AppData\Local\Temp\cce4b20f.s 			page 9
+
+
+ 297              		.loc 1 146 9 is_stmt 1 view .LVU70
+ 298 0010 FFF7FEFF 		bl	Motor_SendAll
+ 299              	.LVL13:
+ 300              		.loc 1 148 1 is_stmt 0 view .LVU71
+ 301 0014 FBE7     		b	.L17
+ 302              	.L22:
+ 303 0016 00BF     		.align	2
+ 304              	.L21:
+ 305 0018 00000000 		.word	g_motor
+ 306              		.cfi_endproc
+ 307              	.LFE137:
+ 309              		.section	.bss.s_motion_started,"aw",%nobits
+ 312              	s_motion_started:
+ 313 0000 00       		.space	1
+ 314              		.section	.bss.s_target_index,"aw",%nobits
+ 315              		.align	2
+ 318              	s_target_index:
+ 319 0000 00000000 		.space	4
+ 320              		.section	.bss.s_last_target_tick,"aw",%nobits
+ 321              		.align	2
+ 324              	s_last_target_tick:
+ 325 0000 00000000 		.space	4
+ 326              		.global	g_motor
+ 327              		.section	.bss.g_motor,"aw",%nobits
+ 328              		.align	2
+ 331              	g_motor:
+ 332 0000 00000000 		.space	112
+ 332      00000000 
+ 332      00000000 
+ 332      00000000 
+ 332      00000000 
+ 333              		.section	.rodata.kTargetsDeg,"a"
+ 334              		.align	2
+ 337              	kTargetsDeg:
+ 338 0000 00000000 		.word	0
+ 339 0004 0000B442 		.word	1119092736
+ 340 0008 00000000 		.word	0
+ 341 000c 0000B4C2 		.word	-1028390912
+ 342              		.text
+ 343              	.Letext0:
+ 344              		.file 2 "C:/msys64/ucrt64/arm-none-eabi/include/machine/_default_types.h"
+ 345              		.file 3 "C:/msys64/ucrt64/arm-none-eabi/include/sys/_stdint.h"
+ 346              		.file 4 "Core/Inc/pid.h"
+ 347              		.file 5 "Core/Inc/motor.h"
+ 348              		.file 6 "Drivers/CMSIS/Device/ST/STM32F4xx/Include/stm32f407xx.h"
+ 349              		.file 7 "Drivers/STM32F4xx_HAL_Driver/Inc/stm32f4xx_hal_cortex.h"
+ 350              		.file 8 "Core/Inc/app.h"
+ 351              		.file 9 "Drivers/STM32F4xx_HAL_Driver/Inc/stm32f4xx_hal.h"
+ARM GAS  C:\Users\cks\AppData\Local\Temp\cce4b20f.s 			page 10
+
+
+DEFINED SYMBOLS
+                            *ABS*:00000000 app.c
+C:\Users\cks\AppData\Local\Temp\cce4b20f.s:21     .text.App_ControlTimerInit:00000000 $t
+C:\Users\cks\AppData\Local\Temp\cce4b20f.s:26     .text.App_ControlTimerInit:00000000 App_ControlTimerInit
+C:\Users\cks\AppData\Local\Temp\cce4b20f.s:97     .text.App_ControlTimerInit:00000044 $d
+C:\Users\cks\AppData\Local\Temp\cce4b20f.s:103    .text.App_Init:00000000 $t
+C:\Users\cks\AppData\Local\Temp\cce4b20f.s:109    .text.App_Init:00000000 App_Init
+C:\Users\cks\AppData\Local\Temp\cce4b20f.s:152    .text.App_Init:00000028 $d
+C:\Users\cks\AppData\Local\Temp\cce4b20f.s:331    .bss.g_motor:00000000 g_motor
+C:\Users\cks\AppData\Local\Temp\cce4b20f.s:318    .bss.s_target_index:00000000 s_target_index
+C:\Users\cks\AppData\Local\Temp\cce4b20f.s:312    .bss.s_motion_started:00000000 s_motion_started
+C:\Users\cks\AppData\Local\Temp\cce4b20f.s:324    .bss.s_last_target_tick:00000000 s_last_target_tick
+C:\Users\cks\AppData\Local\Temp\cce4b20f.s:160    .text.App_Loop:00000000 $t
+C:\Users\cks\AppData\Local\Temp\cce4b20f.s:166    .text.App_Loop:00000000 App_Loop
+C:\Users\cks\AppData\Local\Temp\cce4b20f.s:256    .text.App_Loop:00000064 $d
+C:\Users\cks\AppData\Local\Temp\cce4b20f.s:337    .rodata.kTargetsDeg:00000000 kTargetsDeg
+C:\Users\cks\AppData\Local\Temp\cce4b20f.s:266    .text.App_ControlTick:00000000 $t
+C:\Users\cks\AppData\Local\Temp\cce4b20f.s:272    .text.App_ControlTick:00000000 App_ControlTick
+C:\Users\cks\AppData\Local\Temp\cce4b20f.s:305    .text.App_ControlTick:00000018 $d
+C:\Users\cks\AppData\Local\Temp\cce4b20f.s:313    .bss.s_motion_started:00000000 $d
+C:\Users\cks\AppData\Local\Temp\cce4b20f.s:315    .bss.s_target_index:00000000 $d
+C:\Users\cks\AppData\Local\Temp\cce4b20f.s:321    .bss.s_last_target_tick:00000000 $d
+C:\Users\cks\AppData\Local\Temp\cce4b20f.s:328    .bss.g_motor:00000000 $d
+C:\Users\cks\AppData\Local\Temp\cce4b20f.s:334    .rodata.kTargetsDeg:00000000 $d
+
+UNDEFINED SYMBOLS
+HAL_NVIC_SetPriority
+HAL_NVIC_EnableIRQ
+Motor_Init
+Motor_CAN_Init
+HAL_GetTick
+Motor_IsOnline
+Motor_SetTarget
+Motor_Update
+Motor_SendAll

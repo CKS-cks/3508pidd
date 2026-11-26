@@ -1,0 +1,1566 @@
+ARM GAS  C:\Users\cks\AppData\Local\Temp\cc2HTUhg.s 			page 1
+
+
+   1              		.cpu cortex-m4
+   2              		.arch armv7e-m
+   3              		.fpu fpv4-sp-d16
+   4              		.eabi_attribute 27, 1
+   5              		.eabi_attribute 28, 1
+   6              		.eabi_attribute 20, 1
+   7              		.eabi_attribute 21, 1
+   8              		.eabi_attribute 23, 3
+   9              		.eabi_attribute 24, 1
+  10              		.eabi_attribute 25, 1
+  11              		.eabi_attribute 26, 1
+  12              		.eabi_attribute 30, 1
+  13              		.eabi_attribute 34, 1
+  14              		.eabi_attribute 18, 4
+  15              		.file	"motor.c"
+  16              		.text
+  17              	.Ltext0:
+  18              		.cfi_sections	.debug_frame
+  19              		.file 1 "Core/Src/motor.c"
+  20              		.section	.text.Motor_Init,"ax",%progbits
+  21              		.align	1
+  22              		.global	Motor_Init
+  23              		.syntax unified
+  24              		.thumb
+  25              		.thumb_func
+  27              	Motor_Init:
+  28              	.LVL0:
+  29              	.LFB134:
+   1:Core/Src/motor.c **** /**
+   2:Core/Src/motor.c ****   ******************************************************************************
+   3:Core/Src/motor.c ****   * @file    motor.c
+   4:Core/Src/motor.c ****   * @brief   M3508 + C620 双环 PID 位置控制实现
+   5:Core/Src/motor.c ****   ******************************************************************************
+   6:Core/Src/motor.c ****   * CAN 协议（大疆 C620 电调）：
+   7:Core/Src/motor.c ****   *
+   8:Core/Src/motor.c ****   *   控制帧（STM32 -> 电调）：标准帧 ID = 0x200（ID 1~4 用 0x200，
+   9:Core/Src/motor.c ****   *   ID 5~8 用 0x1FF）。8 字节数据 = 4 个 int16，大端序，依次对应
+  10:Core/Src/motor.c ****   *   ID1、ID2、ID3、ID4 的电流指令，范围 -16384 ~ +16384（对应 -20A~+20A）。
+  11:Core/Src/motor.c ****   *
+  12:Core/Src/motor.c ****   *   反馈帧（电调 -> STM32）：标准帧 ID = 0x201 ~ 0x204 对应 ID1~ID4，
+  13:Core/Src/motor.c ****   *   8 字节数据：
+  14:Core/Src/motor.c ****   *       data[0..1]：转子机械角度 0~8191（大端）
+  15:Core/Src/motor.c ****   *       data[2..3]：转速 rpm（int16，大端）
+  16:Core/Src/motor.c ****   *       data[4..5]：实际转矩电流（int16，大端）
+  17:Core/Src/motor.c ****   *       data[6]   ：电机温度（℃）
+  18:Core/Src/motor.c ****   *       data[7]   ：保留
+  19:Core/Src/motor.c ****   ******************************************************************************
+  20:Core/Src/motor.c ****   */
+  21:Core/Src/motor.c **** 
+  22:Core/Src/motor.c **** #include "motor.h"
+  23:Core/Src/motor.c **** #include "can.h"
+  24:Core/Src/motor.c **** #include "main.h"
+  25:Core/Src/motor.c **** 
+  26:Core/Src/motor.c **** #include <math.h>
+  27:Core/Src/motor.c **** #include <stddef.h>
+  28:Core/Src/motor.c **** #include <string.h>
+  29:Core/Src/motor.c **** 
+ARM GAS  C:\Users\cks\AppData\Local\Temp\cc2HTUhg.s 			page 2
+
+
+  30:Core/Src/motor.c **** /* 0x200 一帧最多控制 4 个电调 */
+  31:Core/Src/motor.c **** #define MOTOR_COUNT 4
+  32:Core/Src/motor.c **** 
+  33:Core/Src/motor.c **** /* 电机对象查找表：下标 = ID - 1，CAN 接收中断里靠它找到对应的 Motor_t */
+  34:Core/Src/motor.c **** static Motor_t *s_motor_map[MOTOR_COUNT];
+  35:Core/Src/motor.c **** 
+  36:Core/Src/motor.c **** /* 已登记的电机数量：为 0 时不必往总线上发空帧 */
+  37:Core/Src/motor.c **** static uint8_t s_motor_count = 0U;
+  38:Core/Src/motor.c **** 
+  39:Core/Src/motor.c **** /* 角度换算系数：转子计数 -> 输出轴角度（°） */
+  40:Core/Src/motor.c **** #define COUNT_TO_OUTPUT_DEG  (360.0f / M3508_ENCODER_CPR / M3508_GEAR_RATIO)
+  41:Core/Src/motor.c **** 
+  42:Core/Src/motor.c **** /* -------------------------------------------------------------------------- */
+  43:Core/Src/motor.c **** /*                                 初始化                                     */
+  44:Core/Src/motor.c **** /* -------------------------------------------------------------------------- */
+  45:Core/Src/motor.c **** 
+  46:Core/Src/motor.c **** void Motor_Init(Motor_t *motor, uint8_t id)
+  47:Core/Src/motor.c **** {
+  30              		.loc 1 47 1 view -0
+  31              		.cfi_startproc
+  32              		@ args = 0, pretend = 0, frame = 0
+  33              		@ frame_needed = 0, uses_anonymous_args = 0
+  48:Core/Src/motor.c ****     if ((motor == NULL) || (id < 1U) || (id > MOTOR_COUNT))
+  34              		.loc 1 48 5 view .LVU1
+  35              		.loc 1 48 8 is_stmt 0 view .LVU2
+  36 0000 C8B3     		cbz	r0, .L5
+  47:Core/Src/motor.c ****     if ((motor == NULL) || (id < 1U) || (id > MOTOR_COUNT))
+  37              		.loc 1 47 1 view .LVU3
+  38 0002 38B5     		push	{r3, r4, r5, lr}
+  39              	.LCFI0:
+  40              		.cfi_def_cfa_offset 16
+  41              		.cfi_offset 3, -16
+  42              		.cfi_offset 4, -12
+  43              		.cfi_offset 5, -8
+  44              		.cfi_offset 14, -4
+  45 0004 0C46     		mov	r4, r1
+  46 0006 0546     		mov	r5, r0
+  47              		.loc 1 48 25 discriminator 1 view .LVU4
+  48 0008 09B1     		cbz	r1, .L1
+  49              		.loc 1 48 38 discriminator 2 view .LVU5
+  50 000a 0429     		cmp	r1, #4
+  51 000c 00D9     		bls	.L8
+  52              	.LVL1:
+  53              	.L1:
+  49:Core/Src/motor.c ****     {
+  50:Core/Src/motor.c ****         return;
+  51:Core/Src/motor.c ****     }
+  52:Core/Src/motor.c **** 
+  53:Core/Src/motor.c ****     /* 先把整个结构体清零，避免上电随机值 */
+  54:Core/Src/motor.c ****     memset(motor, 0, sizeof(Motor_t));
+  55:Core/Src/motor.c **** 
+  56:Core/Src/motor.c ****     motor->id = id;
+  57:Core/Src/motor.c **** 
+  58:Core/Src/motor.c ****     /* 位置环：输入角度误差(°)，输出输出轴目标转速(rpm) */
+  59:Core/Src/motor.c ****     PID_Init(&motor->pos_pid, POS_KP, POS_KI, POS_KD,
+  60:Core/Src/motor.c ****              POS_OUT_MAX_RPM, POS_I_MAX_RPM);
+  61:Core/Src/motor.c **** 
+ARM GAS  C:\Users\cks\AppData\Local\Temp\cc2HTUhg.s 			page 3
+
+
+  62:Core/Src/motor.c ****     /* 速度环：输入转速误差(rpm)，输出 C620 电流指令 */
+  63:Core/Src/motor.c ****     PID_Init(&motor->spd_pid, SPD_KP, SPD_KI, SPD_KD,
+  64:Core/Src/motor.c ****              SPD_OUT_MAX_CURRENT, SPD_I_MAX_CURRENT);
+  65:Core/Src/motor.c **** 
+  66:Core/Src/motor.c ****     /* 上电时把目标设为 0°（即上电位置），先原地保持，防止一上电就乱�
+  67:Core/Src/motor.c ****     motor->target_deg = 0.0f;
+  68:Core/Src/motor.c **** 
+  69:Core/Src/motor.c ****     /* 登记到查找表 */
+  70:Core/Src/motor.c ****     if (s_motor_map[id - 1U] == NULL)
+  71:Core/Src/motor.c ****     {
+  72:Core/Src/motor.c ****         s_motor_count++;
+  73:Core/Src/motor.c ****     }
+  74:Core/Src/motor.c ****     s_motor_map[id - 1U] = motor;
+  75:Core/Src/motor.c **** }
+  54              		.loc 1 75 1 view .LVU6
+  55 000e 38BD     		pop	{r3, r4, r5, pc}
+  56              	.LVL2:
+  57              	.L8:
+  54:Core/Src/motor.c **** 
+  58              		.loc 1 54 5 is_stmt 1 view .LVU7
+  59 0010 7022     		movs	r2, #112
+  60 0012 0021     		movs	r1, #0
+  61              	.LVL3:
+  54:Core/Src/motor.c **** 
+  62              		.loc 1 54 5 is_stmt 0 view .LVU8
+  63 0014 FFF7FEFF 		bl	memset
+  64              	.LVL4:
+  56:Core/Src/motor.c **** 
+  65              		.loc 1 56 5 is_stmt 1 view .LVU9
+  56:Core/Src/motor.c **** 
+  66              		.loc 1 56 15 is_stmt 0 view .LVU10
+  67 0018 2846     		mov	r0, r5
+  68 001a 00F8244B 		strb	r4, [r0], #36
+  59:Core/Src/motor.c ****              POS_OUT_MAX_RPM, POS_I_MAX_RPM);
+  69              		.loc 1 59 5 is_stmt 1 view .LVU11
+  70 001e 9FED162A 		vldr.32	s4, .L10
+  71 0022 DFED161A 		vldr.32	s3, .L10+4
+  72 0026 9FED161A 		vldr.32	s2, .L10+8
+  73 002a F6EE000A 		vmov.f32	s1, #5.0e-1
+  74 002e B2EE040A 		vmov.f32	s0, #1.0e+1
+  75 0032 FFF7FEFF 		bl	PID_Init
+  76              	.LVL5:
+  63:Core/Src/motor.c ****              SPD_OUT_MAX_CURRENT, SPD_I_MAX_CURRENT);
+  77              		.loc 1 63 5 view .LVU12
+  78 0036 9FED132A 		vldr.32	s4, .L10+12
+  79 003a DFED131A 		vldr.32	s3, .L10+16
+  80 003e 9FED131A 		vldr.32	s2, .L10+20
+  81 0042 F0EE410A 		vmov.f32	s1, s2
+  82 0046 9FED120A 		vldr.32	s0, .L10+24
+  83 004a 05F14800 		add	r0, r5, #72
+  84 004e FFF7FEFF 		bl	PID_Init
+  85              	.LVL6:
+  67:Core/Src/motor.c **** 
+  86              		.loc 1 67 5 view .LVU13
+  67:Core/Src/motor.c **** 
+  87              		.loc 1 67 23 is_stmt 0 view .LVU14
+  88 0052 DFED0E7A 		vldr.32	s15, .L10+20
+ARM GAS  C:\Users\cks\AppData\Local\Temp\cc2HTUhg.s 			page 4
+
+
+  89 0056 C5ED077A 		vstr.32	s15, [r5, #28]
+  70:Core/Src/motor.c ****     {
+  90              		.loc 1 70 5 is_stmt 1 view .LVU15
+  70:Core/Src/motor.c ****     {
+  91              		.loc 1 70 24 is_stmt 0 view .LVU16
+  92 005a 013C     		subs	r4, r4, #1
+  93              	.LVL7:
+  70:Core/Src/motor.c ****     {
+  94              		.loc 1 70 20 view .LVU17
+  95 005c 0D4B     		ldr	r3, .L10+28
+  96 005e 53F82430 		ldr	r3, [r3, r4, lsl #2]
+  70:Core/Src/motor.c ****     {
+  97              		.loc 1 70 8 view .LVU18
+  98 0062 1BB1     		cbz	r3, .L9
+  99              	.L3:
+  74:Core/Src/motor.c **** }
+ 100              		.loc 1 74 5 is_stmt 1 view .LVU19
+  74:Core/Src/motor.c **** }
+ 101              		.loc 1 74 26 is_stmt 0 view .LVU20
+ 102 0064 0B4B     		ldr	r3, .L10+28
+ 103 0066 43F82450 		str	r5, [r3, r4, lsl #2]
+ 104 006a D0E7     		b	.L1
+ 105              	.L9:
+  72:Core/Src/motor.c ****     }
+ 106              		.loc 1 72 9 is_stmt 1 view .LVU21
+  72:Core/Src/motor.c ****     }
+ 107              		.loc 1 72 22 is_stmt 0 view .LVU22
+ 108 006c 0A4A     		ldr	r2, .L10+32
+ 109 006e 1378     		ldrb	r3, [r2]	@ zero_extendqisi2
+ 110 0070 0133     		adds	r3, r3, #1
+ 111 0072 1370     		strb	r3, [r2]
+ 112 0074 F6E7     		b	.L3
+ 113              	.LVL8:
+ 114              	.L5:
+ 115              	.LCFI1:
+ 116              		.cfi_def_cfa_offset 0
+ 117              		.cfi_restore 3
+ 118              		.cfi_restore 4
+ 119              		.cfi_restore 5
+ 120              		.cfi_restore 14
+  72:Core/Src/motor.c ****     }
+ 121              		.loc 1 72 22 view .LVU23
+ 122 0076 7047     		bx	lr
+ 123              	.L11:
+ 124              		.align	2
+ 125              	.L10:
+ 126 0078 00003442 		.word	1110704128
+ 127 007c 0000B442 		.word	1119092736
+ 128 0080 8FC2F53C 		.word	1022739087
+ 129 0084 0000FA44 		.word	1157234688
+ 130 0088 00007A46 		.word	1182400512
+ 131 008c 00000000 		.word	0
+ 132 0090 00004843 		.word	1128792064
+ 133 0094 00000000 		.word	s_motor_map
+ 134 0098 00000000 		.word	s_motor_count
+ 135              		.cfi_endproc
+ 136              	.LFE134:
+ARM GAS  C:\Users\cks\AppData\Local\Temp\cc2HTUhg.s 			page 5
+
+
+ 138              		.section	.text.Motor_SetTarget,"ax",%progbits
+ 139              		.align	1
+ 140              		.global	Motor_SetTarget
+ 141              		.syntax unified
+ 142              		.thumb
+ 143              		.thumb_func
+ 145              	Motor_SetTarget:
+ 146              	.LVL9:
+ 147              	.LFB135:
+  76:Core/Src/motor.c **** 
+  77:Core/Src/motor.c **** void Motor_SetTarget(Motor_t *motor, float deg)
+  78:Core/Src/motor.c **** {
+ 148              		.loc 1 78 1 is_stmt 1 view -0
+ 149              		.cfi_startproc
+ 150              		@ args = 0, pretend = 0, frame = 0
+ 151              		@ frame_needed = 0, uses_anonymous_args = 0
+ 152              		@ link register save eliminated.
+  79:Core/Src/motor.c ****     if (motor == NULL)
+ 153              		.loc 1 79 5 view .LVU25
+ 154              		.loc 1 79 8 is_stmt 0 view .LVU26
+ 155 0000 0346     		mov	r3, r0
+ 156 0002 A0B1     		cbz	r0, .L12
+  80:Core/Src/motor.c ****     {
+  81:Core/Src/motor.c ****         return;
+  82:Core/Src/motor.c ****     }
+  83:Core/Src/motor.c **** 
+  84:Core/Src/motor.c ****     /* 软件限位，防止目标角度超出机构行程 */
+  85:Core/Src/motor.c ****     if (deg > MOTOR_ANGLE_LIMIT_DEG)
+ 157              		.loc 1 85 5 is_stmt 1 view .LVU27
+ 158              		.loc 1 85 8 is_stmt 0 view .LVU28
+ 159 0004 DFED0A7A 		vldr.32	s15, .L17
+ 160 0008 B4EEE70A 		vcmpe.f32	s0, s15
+ 161 000c F1EE10FA 		vmrs	APSR_nzcv, FPSCR
+ 162 0010 09DC     		bgt	.L15
+  86:Core/Src/motor.c ****     {
+  87:Core/Src/motor.c ****         deg = MOTOR_ANGLE_LIMIT_DEG;
+  88:Core/Src/motor.c ****     }
+  89:Core/Src/motor.c ****     else if (deg < -MOTOR_ANGLE_LIMIT_DEG)
+ 163              		.loc 1 89 10 is_stmt 1 view .LVU29
+ 164              		.loc 1 89 13 is_stmt 0 view .LVU30
+ 165 0012 DFED087A 		vldr.32	s15, .L17+4
+ 166 0016 B4EEE70A 		vcmpe.f32	s0, s15
+ 167 001a F1EE10FA 		vmrs	APSR_nzcv, FPSCR
+ 168 001e 04D5     		bpl	.L14
+  90:Core/Src/motor.c ****     {
+  91:Core/Src/motor.c ****         deg = -MOTOR_ANGLE_LIMIT_DEG;
+ 169              		.loc 1 91 13 view .LVU31
+ 170 0020 9FED040A 		vldr.32	s0, .L17+4
+ 171              	.LVL10:
+ 172              		.loc 1 91 13 view .LVU32
+ 173 0024 01E0     		b	.L14
+ 174              	.LVL11:
+ 175              	.L15:
+  87:Core/Src/motor.c ****     }
+ 176              		.loc 1 87 13 view .LVU33
+ 177 0026 9FED020A 		vldr.32	s0, .L17
+ 178              	.LVL12:
+ARM GAS  C:\Users\cks\AppData\Local\Temp\cc2HTUhg.s 			page 6
+
+
+ 179              	.L14:
+  92:Core/Src/motor.c ****     }
+  93:Core/Src/motor.c **** 
+  94:Core/Src/motor.c ****     motor->target_deg = deg;
+ 180              		.loc 1 94 5 is_stmt 1 view .LVU34
+ 181              		.loc 1 94 23 is_stmt 0 view .LVU35
+ 182 002a 83ED070A 		vstr.32	s0, [r3, #28]
+ 183              	.L12:
+  95:Core/Src/motor.c **** }
+ 184              		.loc 1 95 1 view .LVU36
+ 185 002e 7047     		bx	lr
+ 186              	.L18:
+ 187              		.align	2
+ 188              	.L17:
+ 189 0030 00003444 		.word	1144258560
+ 190 0034 000034C4 		.word	-1003225088
+ 191              		.cfi_endproc
+ 192              	.LFE135:
+ 194              		.section	.text.Motor_OnFeedback,"ax",%progbits
+ 195              		.align	1
+ 196              		.global	Motor_OnFeedback
+ 197              		.syntax unified
+ 198              		.thumb
+ 199              		.thumb_func
+ 201              	Motor_OnFeedback:
+ 202              	.LVL13:
+ 203              	.LFB136:
+  96:Core/Src/motor.c **** 
+  97:Core/Src/motor.c **** /* -------------------------------------------------------------------------- */
+  98:Core/Src/motor.c **** /*                               反馈解析                                     */
+  99:Core/Src/motor.c **** /* -------------------------------------------------------------------------- */
+ 100:Core/Src/motor.c **** 
+ 101:Core/Src/motor.c **** void Motor_OnFeedback(Motor_t *motor, const uint8_t data[8])
+ 102:Core/Src/motor.c **** {
+ 204              		.loc 1 102 1 is_stmt 1 view -0
+ 205              		.cfi_startproc
+ 206              		@ args = 0, pretend = 0, frame = 0
+ 207              		@ frame_needed = 0, uses_anonymous_args = 0
+ 103:Core/Src/motor.c ****     uint16_t raw_angle;
+ 208              		.loc 1 103 5 view .LVU38
+ 104:Core/Src/motor.c ****     int16_t delta;
+ 209              		.loc 1 104 5 view .LVU39
+ 105:Core/Src/motor.c **** 
+ 106:Core/Src/motor.c ****     if ((motor == NULL) || (data == NULL))
+ 210              		.loc 1 106 5 view .LVU40
+ 211              		.loc 1 106 8 is_stmt 0 view .LVU41
+ 212 0000 0028     		cmp	r0, #0
+ 213 0002 48D0     		beq	.L26
+ 102:Core/Src/motor.c ****     uint16_t raw_angle;
+ 214              		.loc 1 102 1 view .LVU42
+ 215 0004 10B5     		push	{r4, lr}
+ 216              	.LCFI2:
+ 217              		.cfi_def_cfa_offset 8
+ 218              		.cfi_offset 4, -8
+ 219              		.cfi_offset 14, -4
+ 220 0006 0446     		mov	r4, r0
+ 221              		.loc 1 106 25 discriminator 1 view .LVU43
+ARM GAS  C:\Users\cks\AppData\Local\Temp\cc2HTUhg.s 			page 7
+
+
+ 222 0008 71B3     		cbz	r1, .L19
+ 107:Core/Src/motor.c ****     {
+ 108:Core/Src/motor.c ****         return;
+ 109:Core/Src/motor.c ****     }
+ 110:Core/Src/motor.c **** 
+ 111:Core/Src/motor.c ****     /* 大端序拼出 16 位原始角度（0~8191） */
+ 112:Core/Src/motor.c ****     raw_angle = (uint16_t)(((uint16_t)data[0] << 8) | (uint16_t)data[1]);
+ 223              		.loc 1 112 5 is_stmt 1 view .LVU44
+ 224              		.loc 1 112 43 is_stmt 0 view .LVU45
+ 225 000a 0B78     		ldrb	r3, [r1]	@ zero_extendqisi2
+ 226              		.loc 1 112 69 view .LVU46
+ 227 000c 4A78     		ldrb	r2, [r1, #1]	@ zero_extendqisi2
+ 228              		.loc 1 112 15 view .LVU47
+ 229 000e 42EA0322 		orr	r2, r2, r3, lsl #8
+ 230              	.LVL14:
+ 113:Core/Src/motor.c **** 
+ 114:Core/Src/motor.c ****     if (motor->inited == 0U)
+ 231              		.loc 1 114 5 is_stmt 1 view .LVU48
+ 232              		.loc 1 114 14 is_stmt 0 view .LVU49
+ 233 0012 837C     		ldrb	r3, [r0, #18]	@ zero_extendqisi2
+ 234              		.loc 1 114 8 view .LVU50
+ 235 0014 4BBB     		cbnz	r3, .L21
+ 115:Core/Src/motor.c ****     {
+ 116:Core/Src/motor.c ****         /* 第一帧：把当前位置记为 0°，之后所有目标角度都相对于它 */
+ 117:Core/Src/motor.c ****         motor->inited = 1U;
+ 236              		.loc 1 117 9 is_stmt 1 view .LVU51
+ 237              		.loc 1 117 23 is_stmt 0 view .LVU52
+ 238 0016 0123     		movs	r3, #1
+ 239 0018 8374     		strb	r3, [r0, #18]
+ 118:Core/Src/motor.c ****         motor->last_raw = raw_angle;
+ 240              		.loc 1 118 9 is_stmt 1 view .LVU53
+ 241              		.loc 1 118 25 is_stmt 0 view .LVU54
+ 242 001a 0282     		strh	r2, [r0, #16]	@ movhi
+ 119:Core/Src/motor.c ****         motor->total_count = 0;
+ 243              		.loc 1 119 9 is_stmt 1 view .LVU55
+ 244              		.loc 1 119 28 is_stmt 0 view .LVU56
+ 245 001c 0023     		movs	r3, #0
+ 246 001e C360     		str	r3, [r0, #12]
+ 247              	.LVL15:
+ 248              	.L22:
+ 120:Core/Src/motor.c ****     }
+ 121:Core/Src/motor.c ****     else
+ 122:Core/Src/motor.c ****     {
+ 123:Core/Src/motor.c ****         /* 计算与上一帧的差值。角度会在 0/8191 之间回绕，
+ 124:Core/Src/motor.c ****          * 先按 int16 求差，再把“跨圈”的差值折算到 ±4096 以内。
+ 125:Core/Src/motor.c ****          * 1kHz 下电机 1ms 走的计数远小于半圈，所以这种折算不会出错。 */
+ 126:Core/Src/motor.c ****         delta = (int16_t)(raw_angle - motor->last_raw);
+ 127:Core/Src/motor.c **** 
+ 128:Core/Src/motor.c ****         if (delta > 4096)
+ 129:Core/Src/motor.c ****         {
+ 130:Core/Src/motor.c ****             delta = (int16_t)(delta - 8192);
+ 131:Core/Src/motor.c ****         }
+ 132:Core/Src/motor.c ****         else if (delta < -4096)
+ 133:Core/Src/motor.c ****         {
+ 134:Core/Src/motor.c ****             delta = (int16_t)(delta + 8192);
+ 135:Core/Src/motor.c ****         }
+ 136:Core/Src/motor.c **** 
+ARM GAS  C:\Users\cks\AppData\Local\Temp\cc2HTUhg.s 			page 8
+
+
+ 137:Core/Src/motor.c ****         motor->total_count += delta;
+ 138:Core/Src/motor.c ****         motor->last_raw = raw_angle;
+ 139:Core/Src/motor.c ****     }
+ 140:Core/Src/motor.c **** 
+ 141:Core/Src/motor.c ****     /* 原始转速、电流、温度 */
+ 142:Core/Src/motor.c ****     motor->raw_speed = (int16_t)(((uint16_t)data[2] << 8) | (uint16_t)data[3]);
+ 249              		.loc 1 142 5 is_stmt 1 view .LVU57
+ 250              		.loc 1 142 49 is_stmt 0 view .LVU58
+ 251 0020 8A78     		ldrb	r2, [r1, #2]	@ zero_extendqisi2
+ 252              	.LVL16:
+ 253              		.loc 1 142 75 view .LVU59
+ 254 0022 CB78     		ldrb	r3, [r1, #3]	@ zero_extendqisi2
+ 255              		.loc 1 142 24 view .LVU60
+ 256 0024 43EA0223 		orr	r3, r3, r2, lsl #8
+ 257 0028 1BB2     		sxth	r3, r3
+ 258              		.loc 1 142 22 view .LVU61
+ 259 002a A380     		strh	r3, [r4, #4]	@ movhi
+ 143:Core/Src/motor.c ****     motor->raw_current = (int16_t)(((uint16_t)data[4] << 8) | (uint16_t)data[5]);
+ 260              		.loc 1 143 5 is_stmt 1 view .LVU62
+ 261              		.loc 1 143 51 is_stmt 0 view .LVU63
+ 262 002c 0879     		ldrb	r0, [r1, #4]	@ zero_extendqisi2
+ 263              		.loc 1 143 77 view .LVU64
+ 264 002e 4A79     		ldrb	r2, [r1, #5]	@ zero_extendqisi2
+ 265              		.loc 1 143 26 view .LVU65
+ 266 0030 42EA0022 		orr	r2, r2, r0, lsl #8
+ 267              		.loc 1 143 24 view .LVU66
+ 268 0034 E280     		strh	r2, [r4, #6]	@ movhi
+ 144:Core/Src/motor.c ****     motor->temperature = data[6];
+ 269              		.loc 1 144 5 is_stmt 1 view .LVU67
+ 270              		.loc 1 144 30 is_stmt 0 view .LVU68
+ 271 0036 8A79     		ldrb	r2, [r1, #6]	@ zero_extendqisi2
+ 272              		.loc 1 144 24 view .LVU69
+ 273 0038 2272     		strb	r2, [r4, #8]
+ 145:Core/Src/motor.c **** 
+ 146:Core/Src/motor.c ****     /* 转子累计计数 -> 输出轴角度（多圈，单位 °） */
+ 147:Core/Src/motor.c ****     motor->angle_deg = MOTOR_DIR * ((float)motor->total_count) * COUNT_TO_OUTPUT_DEG;
+ 274              		.loc 1 147 5 is_stmt 1 view .LVU70
+ 275              		.loc 1 147 34 is_stmt 0 view .LVU71
+ 276 003a D4ED037A 		vldr.32	s15, [r4, #12]	@ int
+ 277 003e F8EEE77A 		vcvt.f32.s32	s15, s15
+ 278              		.loc 1 147 64 view .LVU72
+ 279 0042 9FED157A 		vldr.32	s14, .L29
+ 280 0046 67EE877A 		vmul.f32	s15, s15, s14
+ 281              		.loc 1 147 22 view .LVU73
+ 282 004a C4ED057A 		vstr.32	s15, [r4, #20]
+ 148:Core/Src/motor.c **** 
+ 149:Core/Src/motor.c ****     /* 反馈转速 -> 输出轴转速（rpm） */
+ 150:Core/Src/motor.c **** #if C620_SPEED_IS_ROTOR
+ 151:Core/Src/motor.c ****     motor->speed_rpm = MOTOR_DIR * ((float)motor->raw_speed) / M3508_GEAR_RATIO;
+ 283              		.loc 1 151 5 is_stmt 1 view .LVU74
+ 284              		.loc 1 151 34 is_stmt 0 view .LVU75
+ 285 004e 07EE903A 		vmov	s15, r3	@ int
+ 286 0052 F8EEE77A 		vcvt.f32.s32	s15, s15
+ 287              		.loc 1 151 62 view .LVU76
+ 288 0056 DFED116A 		vldr.32	s13, .L29+4
+ 289 005a 87EEA67A 		vdiv.f32	s14, s15, s13
+ 290              		.loc 1 151 22 view .LVU77
+ARM GAS  C:\Users\cks\AppData\Local\Temp\cc2HTUhg.s 			page 9
+
+
+ 291 005e 84ED067A 		vstr.32	s14, [r4, #24]
+ 152:Core/Src/motor.c **** #else
+ 153:Core/Src/motor.c ****     motor->speed_rpm = MOTOR_DIR * ((float)motor->raw_speed);
+ 154:Core/Src/motor.c **** #endif
+ 155:Core/Src/motor.c **** 
+ 156:Core/Src/motor.c ****     /* 记录收帧时间，用于掉线检测 */
+ 157:Core/Src/motor.c ****     motor->last_rx_tick = HAL_GetTick();
+ 292              		.loc 1 157 5 is_stmt 1 view .LVU78
+ 293              		.loc 1 157 27 is_stmt 0 view .LVU79
+ 294 0062 FFF7FEFF 		bl	HAL_GetTick
+ 295              	.LVL17:
+ 296              		.loc 1 157 25 discriminator 1 view .LVU80
+ 297 0066 2062     		str	r0, [r4, #32]
+ 298              	.LVL18:
+ 299              	.L19:
+ 158:Core/Src/motor.c **** }
+ 300              		.loc 1 158 1 view .LVU81
+ 301 0068 10BD     		pop	{r4, pc}
+ 302              	.LVL19:
+ 303              	.L21:
+ 126:Core/Src/motor.c **** 
+ 304              		.loc 1 126 9 is_stmt 1 view .LVU82
+ 126:Core/Src/motor.c **** 
+ 305              		.loc 1 126 44 is_stmt 0 view .LVU83
+ 306 006a 038A     		ldrh	r3, [r0, #16]
+ 126:Core/Src/motor.c **** 
+ 307              		.loc 1 126 37 view .LVU84
+ 308 006c D31A     		subs	r3, r2, r3
+ 309 006e 98B2     		uxth	r0, r3
+ 310              	.LVL20:
+ 126:Core/Src/motor.c **** 
+ 311              		.loc 1 126 15 view .LVU85
+ 312 0070 1BB2     		sxth	r3, r3
+ 313              	.LVL21:
+ 128:Core/Src/motor.c ****         {
+ 314              		.loc 1 128 9 is_stmt 1 view .LVU86
+ 128:Core/Src/motor.c ****         {
+ 315              		.loc 1 128 12 is_stmt 0 view .LVU87
+ 316 0072 B3F5805F 		cmp	r3, #4096
+ 317 0076 07DD     		ble	.L23
+ 130:Core/Src/motor.c ****         }
+ 318              		.loc 1 130 13 is_stmt 1 view .LVU88
+ 130:Core/Src/motor.c ****         }
+ 319              		.loc 1 130 37 is_stmt 0 view .LVU89
+ 320 0078 A0F50050 		sub	r0, r0, #8192
+ 130:Core/Src/motor.c ****         }
+ 321              		.loc 1 130 19 view .LVU90
+ 322 007c 03B2     		sxth	r3, r0
+ 323              	.LVL22:
+ 324              	.L24:
+ 137:Core/Src/motor.c ****         motor->last_raw = raw_angle;
+ 325              		.loc 1 137 9 is_stmt 1 view .LVU91
+ 137:Core/Src/motor.c ****         motor->last_raw = raw_angle;
+ 326              		.loc 1 137 14 is_stmt 0 view .LVU92
+ 327 007e E068     		ldr	r0, [r4, #12]
+ 137:Core/Src/motor.c ****         motor->last_raw = raw_angle;
+ 328              		.loc 1 137 28 view .LVU93
+ARM GAS  C:\Users\cks\AppData\Local\Temp\cc2HTUhg.s 			page 10
+
+
+ 329 0080 0344     		add	r3, r3, r0
+ 330              	.LVL23:
+ 137:Core/Src/motor.c ****         motor->last_raw = raw_angle;
+ 331              		.loc 1 137 28 view .LVU94
+ 332 0082 E360     		str	r3, [r4, #12]
+ 138:Core/Src/motor.c ****     }
+ 333              		.loc 1 138 9 is_stmt 1 view .LVU95
+ 138:Core/Src/motor.c ****     }
+ 334              		.loc 1 138 25 is_stmt 0 view .LVU96
+ 335 0084 2282     		strh	r2, [r4, #16]	@ movhi
+ 336 0086 CBE7     		b	.L22
+ 337              	.LVL24:
+ 338              	.L23:
+ 132:Core/Src/motor.c ****         {
+ 339              		.loc 1 132 14 is_stmt 1 view .LVU97
+ 132:Core/Src/motor.c ****         {
+ 340              		.loc 1 132 17 is_stmt 0 view .LVU98
+ 341 0088 13F5805F 		cmn	r3, #4096
+ 342 008c F7DA     		bge	.L24
+ 134:Core/Src/motor.c ****         }
+ 343              		.loc 1 134 13 is_stmt 1 view .LVU99
+ 134:Core/Src/motor.c ****         }
+ 344              		.loc 1 134 37 is_stmt 0 view .LVU100
+ 345 008e 00F50050 		add	r0, r0, #8192
+ 134:Core/Src/motor.c ****         }
+ 346              		.loc 1 134 19 view .LVU101
+ 347 0092 03B2     		sxth	r3, r0
+ 348              	.LVL25:
+ 134:Core/Src/motor.c ****         }
+ 349              		.loc 1 134 19 view .LVU102
+ 350 0094 F3E7     		b	.L24
+ 351              	.LVL26:
+ 352              	.L26:
+ 353              	.LCFI3:
+ 354              		.cfi_def_cfa_offset 0
+ 355              		.cfi_restore 4
+ 356              		.cfi_restore 14
+ 134:Core/Src/motor.c ****         }
+ 357              		.loc 1 134 19 view .LVU103
+ 358 0096 7047     		bx	lr
+ 359              	.L30:
+ 360              		.align	2
+ 361              	.L29:
+ 362 0098 95F9153B 		.word	991295893
+ 363 009c 2CA09941 		.word	1100587052
+ 364              		.cfi_endproc
+ 365              	.LFE136:
+ 367              		.section	.text.Motor_IsOnline,"ax",%progbits
+ 368              		.align	1
+ 369              		.global	Motor_IsOnline
+ 370              		.syntax unified
+ 371              		.thumb
+ 372              		.thumb_func
+ 374              	Motor_IsOnline:
+ 375              	.LVL27:
+ 376              	.LFB137:
+ 159:Core/Src/motor.c **** 
+ARM GAS  C:\Users\cks\AppData\Local\Temp\cc2HTUhg.s 			page 11
+
+
+ 160:Core/Src/motor.c **** uint8_t Motor_IsOnline(const Motor_t *motor)
+ 161:Core/Src/motor.c **** {
+ 377              		.loc 1 161 1 is_stmt 1 view -0
+ 378              		.cfi_startproc
+ 379              		@ args = 0, pretend = 0, frame = 0
+ 380              		@ frame_needed = 0, uses_anonymous_args = 0
+ 162:Core/Src/motor.c ****     if ((motor == NULL) || (motor->inited == 0U))
+ 381              		.loc 1 162 5 view .LVU105
+ 382              		.loc 1 162 8 is_stmt 0 view .LVU106
+ 383 0000 70B1     		cbz	r0, .L36
+ 161:Core/Src/motor.c ****     if ((motor == NULL) || (motor->inited == 0U))
+ 384              		.loc 1 161 1 view .LVU107
+ 385 0002 10B5     		push	{r4, lr}
+ 386              	.LCFI4:
+ 387              		.cfi_def_cfa_offset 8
+ 388              		.cfi_offset 4, -8
+ 389              		.cfi_offset 14, -4
+ 390 0004 0446     		mov	r4, r0
+ 391              		.loc 1 162 34 discriminator 1 view .LVU108
+ 392 0006 807C     		ldrb	r0, [r0, #18]	@ zero_extendqisi2
+ 393              	.LVL28:
+ 394              		.loc 1 162 25 discriminator 1 view .LVU109
+ 395 0008 00B9     		cbnz	r0, .L39
+ 396              	.L32:
+ 163:Core/Src/motor.c ****     {
+ 164:Core/Src/motor.c ****         return 0U;
+ 165:Core/Src/motor.c ****     }
+ 166:Core/Src/motor.c **** 
+ 167:Core/Src/motor.c ****     /* 无符号减法，tick 溢出也能正确判断 */
+ 168:Core/Src/motor.c ****     if ((HAL_GetTick() - motor->last_rx_tick) >= MOTOR_FEEDBACK_TIMEOUT_MS)
+ 169:Core/Src/motor.c ****     {
+ 170:Core/Src/motor.c ****         return 0U;
+ 171:Core/Src/motor.c ****     }
+ 172:Core/Src/motor.c **** 
+ 173:Core/Src/motor.c ****     return 1U;
+ 174:Core/Src/motor.c **** }
+ 397              		.loc 1 174 1 view .LVU110
+ 398 000a 10BD     		pop	{r4, pc}
+ 399              	.LVL29:
+ 400              	.L39:
+ 168:Core/Src/motor.c ****     {
+ 401              		.loc 1 168 5 is_stmt 1 view .LVU111
+ 168:Core/Src/motor.c ****     {
+ 402              		.loc 1 168 10 is_stmt 0 view .LVU112
+ 403 000c FFF7FEFF 		bl	HAL_GetTick
+ 404              	.LVL30:
+ 168:Core/Src/motor.c ****     {
+ 405              		.loc 1 168 31 discriminator 1 view .LVU113
+ 406 0010 236A     		ldr	r3, [r4, #32]
+ 168:Core/Src/motor.c ****     {
+ 407              		.loc 1 168 24 discriminator 1 view .LVU114
+ 408 0012 C01A     		subs	r0, r0, r3
+ 168:Core/Src/motor.c ****     {
+ 409              		.loc 1 168 8 discriminator 1 view .LVU115
+ 410 0014 6328     		cmp	r0, #99
+ 411 0016 01D8     		bhi	.L34
+ 173:Core/Src/motor.c **** }
+ARM GAS  C:\Users\cks\AppData\Local\Temp\cc2HTUhg.s 			page 12
+
+
+ 412              		.loc 1 173 12 view .LVU116
+ 413 0018 0120     		movs	r0, #1
+ 414 001a F6E7     		b	.L32
+ 415              	.L34:
+ 170:Core/Src/motor.c ****     }
+ 416              		.loc 1 170 16 view .LVU117
+ 417 001c 0020     		movs	r0, #0
+ 418 001e F4E7     		b	.L32
+ 419              	.LVL31:
+ 420              	.L36:
+ 421              	.LCFI5:
+ 422              		.cfi_def_cfa_offset 0
+ 423              		.cfi_restore 4
+ 424              		.cfi_restore 14
+ 425              		.loc 1 174 1 view .LVU118
+ 426 0020 7047     		bx	lr
+ 427              		.cfi_endproc
+ 428              	.LFE137:
+ 430              		.section	.text.Motor_Update,"ax",%progbits
+ 431              		.align	1
+ 432              		.global	Motor_Update
+ 433              		.syntax unified
+ 434              		.thumb
+ 435              		.thumb_func
+ 437              	Motor_Update:
+ 438              	.LVL32:
+ 439              	.LFB138:
+ 175:Core/Src/motor.c **** 
+ 176:Core/Src/motor.c **** /* -------------------------------------------------------------------------- */
+ 177:Core/Src/motor.c **** /*                              双环控制                                      */
+ 178:Core/Src/motor.c **** /* -------------------------------------------------------------------------- */
+ 179:Core/Src/motor.c **** 
+ 180:Core/Src/motor.c **** void Motor_Update(Motor_t *motor)
+ 181:Core/Src/motor.c **** {
+ 440              		.loc 1 181 1 is_stmt 1 view -0
+ 441              		.cfi_startproc
+ 442              		@ args = 0, pretend = 0, frame = 0
+ 443              		@ frame_needed = 0, uses_anonymous_args = 0
+ 182:Core/Src/motor.c ****     float pos_error;
+ 444              		.loc 1 182 5 view .LVU120
+ 183:Core/Src/motor.c ****     float speed_target;
+ 445              		.loc 1 183 5 view .LVU121
+ 184:Core/Src/motor.c **** 
+ 185:Core/Src/motor.c ****     if (motor == NULL)
+ 446              		.loc 1 185 5 view .LVU122
+ 447              		.loc 1 185 8 is_stmt 0 view .LVU123
+ 448 0000 0028     		cmp	r0, #0
+ 449 0002 43D0     		beq	.L49
+ 181:Core/Src/motor.c ****     float pos_error;
+ 450              		.loc 1 181 1 view .LVU124
+ 451 0004 10B5     		push	{r4, lr}
+ 452              	.LCFI6:
+ 453              		.cfi_def_cfa_offset 8
+ 454              		.cfi_offset 4, -8
+ 455              		.cfi_offset 14, -4
+ 456 0006 2DED028B 		vpush.64	{d8}
+ 457              	.LCFI7:
+ARM GAS  C:\Users\cks\AppData\Local\Temp\cc2HTUhg.s 			page 13
+
+
+ 458              		.cfi_def_cfa_offset 16
+ 459              		.cfi_offset 80, -16
+ 460              		.cfi_offset 81, -12
+ 461 000a 0446     		mov	r4, r0
+ 186:Core/Src/motor.c ****     {
+ 187:Core/Src/motor.c ****         return;
+ 188:Core/Src/motor.c ****     }
+ 189:Core/Src/motor.c **** 
+ 190:Core/Src/motor.c ****     /* 掉线或过温：立刻切断输出，并清空两个环的积分，防止恢复瞬间猛�
+ 191:Core/Src/motor.c ****     if ((Motor_IsOnline(motor) == 0U) || (motor->temperature >= MOTOR_TEMP_LIMIT_C))
+ 462              		.loc 1 191 5 is_stmt 1 view .LVU125
+ 463              		.loc 1 191 10 is_stmt 0 view .LVU126
+ 464 000c FFF7FEFF 		bl	Motor_IsOnline
+ 465              	.LVL33:
+ 466              		.loc 1 191 8 discriminator 1 view .LVU127
+ 467 0010 10B1     		cbz	r0, .L42
+ 468              		.loc 1 191 48 discriminator 2 view .LVU128
+ 469 0012 237A     		ldrb	r3, [r4, #8]	@ zero_extendqisi2
+ 470              		.loc 1 191 39 discriminator 2 view .LVU129
+ 471 0014 4F2B     		cmp	r3, #79
+ 472 0016 0CD9     		bls	.L43
+ 473              	.L42:
+ 192:Core/Src/motor.c ****     {
+ 193:Core/Src/motor.c ****         motor->out_current = 0.0f;
+ 474              		.loc 1 193 9 is_stmt 1 view .LVU130
+ 475              		.loc 1 193 28 is_stmt 0 view .LVU131
+ 476 0018 0023     		movs	r3, #0
+ 477 001a E366     		str	r3, [r4, #108]	@ float
+ 194:Core/Src/motor.c ****         PID_Reset(&motor->pos_pid);
+ 478              		.loc 1 194 9 is_stmt 1 view .LVU132
+ 479 001c 04F12400 		add	r0, r4, #36
+ 480 0020 FFF7FEFF 		bl	PID_Reset
+ 481              	.LVL34:
+ 195:Core/Src/motor.c ****         PID_Reset(&motor->spd_pid);
+ 482              		.loc 1 195 9 view .LVU133
+ 483 0024 04F14800 		add	r0, r4, #72
+ 484 0028 FFF7FEFF 		bl	PID_Reset
+ 485              	.LVL35:
+ 196:Core/Src/motor.c ****         return;
+ 486              		.loc 1 196 9 view .LVU134
+ 487              	.L40:
+ 197:Core/Src/motor.c ****     }
+ 198:Core/Src/motor.c **** 
+ 199:Core/Src/motor.c ****     pos_error = motor->target_deg - motor->angle_deg;
+ 200:Core/Src/motor.c **** 
+ 201:Core/Src/motor.c ****     /* ---------- 外环：位置环，输出目标转速 ---------- */
+ 202:Core/Src/motor.c ****     speed_target = PID_Calc(&motor->pos_pid, motor->target_deg, motor->angle_deg, CONTROL_DT_S);
+ 203:Core/Src/motor.c **** 
+ 204:Core/Src/motor.c ****     /* 到位死区：误差和转速都很小的时候，把目标转速压成 0，
+ 205:Core/Src/motor.c ****      * 由速度环主动“刹住”，避免在目标点附近来回抖动。 */
+ 206:Core/Src/motor.c ****     if ((fabsf(pos_error) < POS_DEADBAND_DEG) &&
+ 207:Core/Src/motor.c ****         (fabsf(motor->speed_rpm) < POS_HOLD_SPEED_RPM))
+ 208:Core/Src/motor.c ****     {
+ 209:Core/Src/motor.c ****         speed_target = 0.0f;
+ 210:Core/Src/motor.c ****     }
+ 211:Core/Src/motor.c **** 
+ 212:Core/Src/motor.c ****     /* ---------- 内环：速度环，输出电流指令 ---------- */
+ARM GAS  C:\Users\cks\AppData\Local\Temp\cc2HTUhg.s 			page 14
+
+
+ 213:Core/Src/motor.c ****     motor->out_current = PID_Calc(&motor->spd_pid, speed_target, motor->speed_rpm, CONTROL_DT_S);
+ 214:Core/Src/motor.c **** }
+ 488              		.loc 1 214 1 is_stmt 0 view .LVU135
+ 489 002c BDEC028B 		vldm	sp!, {d8}
+ 490              	.LCFI8:
+ 491              		.cfi_remember_state
+ 492              		.cfi_restore 80
+ 493              		.cfi_restore 81
+ 494              		.cfi_def_cfa_offset 8
+ 495 0030 10BD     		pop	{r4, pc}
+ 496              	.LVL36:
+ 497              	.L43:
+ 498              	.LCFI9:
+ 499              		.cfi_restore_state
+ 199:Core/Src/motor.c **** 
+ 500              		.loc 1 199 5 is_stmt 1 view .LVU136
+ 199:Core/Src/motor.c **** 
+ 501              		.loc 1 199 22 is_stmt 0 view .LVU137
+ 502 0032 94ED070A 		vldr.32	s0, [r4, #28]
+ 199:Core/Src/motor.c **** 
+ 503              		.loc 1 199 42 view .LVU138
+ 504 0036 D4ED050A 		vldr.32	s1, [r4, #20]
+ 199:Core/Src/motor.c **** 
+ 505              		.loc 1 199 15 view .LVU139
+ 506 003a 30EE608A 		vsub.f32	s16, s0, s1
+ 507              	.LVL37:
+ 202:Core/Src/motor.c **** 
+ 508              		.loc 1 202 5 is_stmt 1 view .LVU140
+ 202:Core/Src/motor.c **** 
+ 509              		.loc 1 202 20 is_stmt 0 view .LVU141
+ 510 003e 9FED141A 		vldr.32	s2, .L52
+ 511 0042 04F12400 		add	r0, r4, #36
+ 512 0046 FFF7FEFF 		bl	PID_Calc
+ 513              	.LVL38:
+ 206:Core/Src/motor.c ****         (fabsf(motor->speed_rpm) < POS_HOLD_SPEED_RPM))
+ 514              		.loc 1 206 5 is_stmt 1 view .LVU142
+ 206:Core/Src/motor.c ****         (fabsf(motor->speed_rpm) < POS_HOLD_SPEED_RPM))
+ 515              		.loc 1 206 10 is_stmt 0 view .LVU143
+ 516 004a F0EEC87A 		vabs.f32	s15, s16
+ 206:Core/Src/motor.c ****         (fabsf(motor->speed_rpm) < POS_HOLD_SPEED_RPM))
+ 517              		.loc 1 206 8 view .LVU144
+ 518 004e B6EE007A 		vmov.f32	s14, #5.0e-1
+ 519 0052 F4EEC77A 		vcmpe.f32	s15, s14
+ 520 0056 F1EE10FA 		vmrs	APSR_nzcv, FPSCR
+ 521 005a 0CD5     		bpl	.L44
+ 207:Core/Src/motor.c ****     {
+ 522              		.loc 1 207 21 view .LVU145
+ 523 005c D4ED067A 		vldr.32	s15, [r4, #24]
+ 207:Core/Src/motor.c ****     {
+ 524              		.loc 1 207 10 view .LVU146
+ 525 0060 F0EEE77A 		vabs.f32	s15, s15
+ 206:Core/Src/motor.c ****         (fabsf(motor->speed_rpm) < POS_HOLD_SPEED_RPM))
+ 526              		.loc 1 206 47 discriminator 1 view .LVU147
+ 527 0064 B1EE047A 		vmov.f32	s14, #5.0e+0
+ 528 0068 F4EEC77A 		vcmpe.f32	s15, s14
+ 529 006c F1EE10FA 		vmrs	APSR_nzcv, FPSCR
+ 530 0070 01D5     		bpl	.L44
+ARM GAS  C:\Users\cks\AppData\Local\Temp\cc2HTUhg.s 			page 15
+
+
+ 209:Core/Src/motor.c ****     }
+ 531              		.loc 1 209 22 view .LVU148
+ 532 0072 9FED080A 		vldr.32	s0, .L52+4
+ 533              	.LVL39:
+ 534              	.L44:
+ 213:Core/Src/motor.c **** }
+ 535              		.loc 1 213 5 is_stmt 1 view .LVU149
+ 213:Core/Src/motor.c **** }
+ 536              		.loc 1 213 26 is_stmt 0 view .LVU150
+ 537 0076 9FED061A 		vldr.32	s2, .L52
+ 538 007a D4ED060A 		vldr.32	s1, [r4, #24]
+ 539 007e 04F14800 		add	r0, r4, #72
+ 540 0082 FFF7FEFF 		bl	PID_Calc
+ 541              	.LVL40:
+ 213:Core/Src/motor.c **** }
+ 542              		.loc 1 213 24 discriminator 1 view .LVU151
+ 543 0086 84ED1B0A 		vstr.32	s0, [r4, #108]
+ 544 008a CFE7     		b	.L40
+ 545              	.LVL41:
+ 546              	.L49:
+ 547              	.LCFI10:
+ 548              		.cfi_def_cfa_offset 0
+ 549              		.cfi_restore 4
+ 550              		.cfi_restore 14
+ 551              		.cfi_restore 80
+ 552              		.cfi_restore 81
+ 213:Core/Src/motor.c **** }
+ 553              		.loc 1 213 24 discriminator 1 view .LVU152
+ 554 008c 7047     		bx	lr
+ 555              	.L53:
+ 556 008e 00BF     		.align	2
+ 557              	.L52:
+ 558 0090 6F12833A 		.word	981668463
+ 559 0094 00000000 		.word	0
+ 560              		.cfi_endproc
+ 561              	.LFE138:
+ 563              		.section	.text.Motor_CAN_Init,"ax",%progbits
+ 564              		.align	1
+ 565              		.global	Motor_CAN_Init
+ 566              		.syntax unified
+ 567              		.thumb
+ 568              		.thumb_func
+ 570              	Motor_CAN_Init:
+ 571              	.LFB139:
+ 215:Core/Src/motor.c **** 
+ 216:Core/Src/motor.c **** /* -------------------------------------------------------------------------- */
+ 217:Core/Src/motor.c **** /*                              CAN 收发                                      */
+ 218:Core/Src/motor.c **** /* -------------------------------------------------------------------------- */
+ 219:Core/Src/motor.c **** 
+ 220:Core/Src/motor.c **** void Motor_CAN_Init(void)
+ 221:Core/Src/motor.c **** {
+ 572              		.loc 1 221 1 is_stmt 1 view -0
+ 573              		.cfi_startproc
+ 574              		@ args = 0, pretend = 0, frame = 40
+ 575              		@ frame_needed = 0, uses_anonymous_args = 0
+ 576 0000 10B5     		push	{r4, lr}
+ 577              	.LCFI11:
+ARM GAS  C:\Users\cks\AppData\Local\Temp\cc2HTUhg.s 			page 16
+
+
+ 578              		.cfi_def_cfa_offset 8
+ 579              		.cfi_offset 4, -8
+ 580              		.cfi_offset 14, -4
+ 581 0002 8AB0     		sub	sp, sp, #40
+ 582              	.LCFI12:
+ 583              		.cfi_def_cfa_offset 48
+ 222:Core/Src/motor.c ****     CAN_FilterTypeDef filter = {0};
+ 584              		.loc 1 222 5 view .LVU154
+ 585              		.loc 1 222 23 is_stmt 0 view .LVU155
+ 586 0004 2822     		movs	r2, #40
+ 587 0006 0021     		movs	r1, #0
+ 588 0008 6846     		mov	r0, sp
+ 589 000a FFF7FEFF 		bl	memset
+ 590              	.LVL42:
+ 223:Core/Src/motor.c **** 
+ 224:Core/Src/motor.c ****     /* 只接收 0x200 ~ 0x20F 这一段 ID（C620 的反馈帧 0x201~0x204 都在里面），
+ 225:Core/Src/motor.c ****      * 其余总线数据直接过滤掉，减少中断负担。 */
+ 226:Core/Src/motor.c ****     filter.FilterBank = 0;
+ 591              		.loc 1 226 5 is_stmt 1 view .LVU156
+ 227:Core/Src/motor.c ****     filter.FilterMode = CAN_FILTERMODE_IDMASK;
+ 592              		.loc 1 227 5 view .LVU157
+ 228:Core/Src/motor.c ****     filter.FilterScale = CAN_FILTERSCALE_32BIT;
+ 593              		.loc 1 228 5 view .LVU158
+ 594              		.loc 1 228 24 is_stmt 0 view .LVU159
+ 595 000e 0123     		movs	r3, #1
+ 596 0010 0793     		str	r3, [sp, #28]
+ 229:Core/Src/motor.c ****     filter.FilterIdHigh = (uint32_t)(0x200U << 5);      /* 标准 ID 在寄存器高 11 位 */
+ 597              		.loc 1 229 5 is_stmt 1 view .LVU160
+ 598              		.loc 1 229 25 is_stmt 0 view .LVU161
+ 599 0012 4FF48042 		mov	r2, #16384
+ 600 0016 0092     		str	r2, [sp]
+ 230:Core/Src/motor.c ****     filter.FilterIdLow = 0U;
+ 601              		.loc 1 230 5 is_stmt 1 view .LVU162
+ 231:Core/Src/motor.c ****     filter.FilterMaskIdHigh = (uint32_t)(0x7F0U << 5);  /* 掩码：只比较高 7 位 */
+ 602              		.loc 1 231 5 view .LVU163
+ 603              		.loc 1 231 29 is_stmt 0 view .LVU164
+ 604 0018 4FF47E42 		mov	r2, #65024
+ 605 001c 0292     		str	r2, [sp, #8]
+ 232:Core/Src/motor.c ****     filter.FilterMaskIdLow = 0U;
+ 606              		.loc 1 232 5 is_stmt 1 view .LVU165
+ 233:Core/Src/motor.c ****     filter.FilterFIFOAssignment = CAN_RX_FIFO0;
+ 607              		.loc 1 233 5 view .LVU166
+ 234:Core/Src/motor.c ****     filter.FilterActivation = ENABLE;
+ 608              		.loc 1 234 5 view .LVU167
+ 609              		.loc 1 234 29 is_stmt 0 view .LVU168
+ 610 001e 0893     		str	r3, [sp, #32]
+ 235:Core/Src/motor.c ****     filter.SlaveStartFilterBank = 14U;                  /* 只给 CAN2 用，CAN1 忽略 */
+ 611              		.loc 1 235 5 is_stmt 1 view .LVU169
+ 612              		.loc 1 235 33 is_stmt 0 view .LVU170
+ 613 0020 0E23     		movs	r3, #14
+ 614 0022 0993     		str	r3, [sp, #36]
+ 236:Core/Src/motor.c **** 
+ 237:Core/Src/motor.c ****     if (HAL_CAN_ConfigFilter(&hcan1, &filter) != HAL_OK)
+ 615              		.loc 1 237 5 is_stmt 1 view .LVU171
+ 616              		.loc 1 237 9 is_stmt 0 view .LVU172
+ 617 0024 6946     		mov	r1, sp
+ 618 0026 1048     		ldr	r0, .L62
+ARM GAS  C:\Users\cks\AppData\Local\Temp\cc2HTUhg.s 			page 17
+
+
+ 619 0028 FFF7FEFF 		bl	HAL_CAN_ConfigFilter
+ 620              	.LVL43:
+ 621              		.loc 1 237 8 discriminator 1 view .LVU173
+ 622 002c 90B9     		cbnz	r0, .L59
+ 623              	.L55:
+ 238:Core/Src/motor.c ****     {
+ 239:Core/Src/motor.c ****         Error_Handler();
+ 240:Core/Src/motor.c ****     }
+ 241:Core/Src/motor.c **** 
+ 242:Core/Src/motor.c ****     if (HAL_CAN_Start(&hcan1) != HAL_OK)
+ 624              		.loc 1 242 5 is_stmt 1 view .LVU174
+ 625              		.loc 1 242 9 is_stmt 0 view .LVU175
+ 626 002e 0E48     		ldr	r0, .L62
+ 627 0030 FFF7FEFF 		bl	HAL_CAN_Start
+ 628              	.LVL44:
+ 629              		.loc 1 242 8 discriminator 1 view .LVU176
+ 630 0034 88B9     		cbnz	r0, .L60
+ 631              	.L56:
+ 243:Core/Src/motor.c ****     {
+ 244:Core/Src/motor.c ****         Error_Handler();
+ 245:Core/Src/motor.c ****     }
+ 246:Core/Src/motor.c **** 
+ 247:Core/Src/motor.c ****     /* 开启“FIFO0 收到新消息”中断 */
+ 248:Core/Src/motor.c ****     if (HAL_CAN_ActivateNotification(&hcan1, CAN_IT_RX_FIFO0_MSG_PENDING) != HAL_OK)
+ 632              		.loc 1 248 5 is_stmt 1 view .LVU177
+ 633              		.loc 1 248 9 is_stmt 0 view .LVU178
+ 634 0036 0221     		movs	r1, #2
+ 635 0038 0B48     		ldr	r0, .L62
+ 636 003a FFF7FEFF 		bl	HAL_CAN_ActivateNotification
+ 637              	.LVL45:
+ 638              		.loc 1 248 8 discriminator 1 view .LVU179
+ 639 003e 78B9     		cbnz	r0, .L61
+ 640              	.L57:
+ 249:Core/Src/motor.c ****     {
+ 250:Core/Src/motor.c ****         Error_Handler();
+ 251:Core/Src/motor.c ****     }
+ 252:Core/Src/motor.c **** 
+ 253:Core/Src/motor.c ****     /* HAL 的 ActivateNotification 只开外设中断，NVIC 需要自己开。
+ 254:Core/Src/motor.c ****      * 接收中断优先级 1，高于 1kHz 控制中断（2），保证反馈不丢帧。 */
+ 255:Core/Src/motor.c ****     HAL_NVIC_SetPriority(CAN1_RX0_IRQn, 1, 0);
+ 641              		.loc 1 255 5 is_stmt 1 view .LVU180
+ 642 0040 0022     		movs	r2, #0
+ 643 0042 0121     		movs	r1, #1
+ 644 0044 1420     		movs	r0, #20
+ 645 0046 FFF7FEFF 		bl	HAL_NVIC_SetPriority
+ 646              	.LVL46:
+ 256:Core/Src/motor.c ****     HAL_NVIC_EnableIRQ(CAN1_RX0_IRQn);
+ 647              		.loc 1 256 5 view .LVU181
+ 648 004a 1420     		movs	r0, #20
+ 649 004c FFF7FEFF 		bl	HAL_NVIC_EnableIRQ
+ 650              	.LVL47:
+ 257:Core/Src/motor.c **** }
+ 651              		.loc 1 257 1 is_stmt 0 view .LVU182
+ 652 0050 0AB0     		add	sp, sp, #40
+ 653              	.LCFI13:
+ 654              		.cfi_remember_state
+ 655              		.cfi_def_cfa_offset 8
+ARM GAS  C:\Users\cks\AppData\Local\Temp\cc2HTUhg.s 			page 18
+
+
+ 656              		@ sp needed
+ 657 0052 10BD     		pop	{r4, pc}
+ 658              	.L59:
+ 659              	.LCFI14:
+ 660              		.cfi_restore_state
+ 239:Core/Src/motor.c ****     }
+ 661              		.loc 1 239 9 is_stmt 1 view .LVU183
+ 662 0054 FFF7FEFF 		bl	Error_Handler
+ 663              	.LVL48:
+ 664 0058 E9E7     		b	.L55
+ 665              	.L60:
+ 244:Core/Src/motor.c ****     }
+ 666              		.loc 1 244 9 view .LVU184
+ 667 005a FFF7FEFF 		bl	Error_Handler
+ 668              	.LVL49:
+ 669 005e EAE7     		b	.L56
+ 670              	.L61:
+ 250:Core/Src/motor.c ****     }
+ 671              		.loc 1 250 9 view .LVU185
+ 672 0060 FFF7FEFF 		bl	Error_Handler
+ 673              	.LVL50:
+ 674 0064 ECE7     		b	.L57
+ 675              	.L63:
+ 676 0066 00BF     		.align	2
+ 677              	.L62:
+ 678 0068 00000000 		.word	hcan1
+ 679              		.cfi_endproc
+ 680              	.LFE139:
+ 682              		.section	.text.Motor_SendAll,"ax",%progbits
+ 683              		.align	1
+ 684              		.global	Motor_SendAll
+ 685              		.syntax unified
+ 686              		.thumb
+ 687              		.thumb_func
+ 689              	Motor_SendAll:
+ 690              	.LFB140:
+ 258:Core/Src/motor.c **** 
+ 259:Core/Src/motor.c **** void Motor_SendAll(void)
+ 260:Core/Src/motor.c **** {
+ 691              		.loc 1 260 1 view -0
+ 692              		.cfi_startproc
+ 693              		@ args = 0, pretend = 0, frame = 40
+ 694              		@ frame_needed = 0, uses_anonymous_args = 0
+ 695 0000 00B5     		push	{lr}
+ 696              	.LCFI15:
+ 697              		.cfi_def_cfa_offset 4
+ 698              		.cfi_offset 14, -4
+ 699 0002 8BB0     		sub	sp, sp, #44
+ 700              	.LCFI16:
+ 701              		.cfi_def_cfa_offset 48
+ 261:Core/Src/motor.c ****     CAN_TxHeaderTypeDef tx_header;
+ 702              		.loc 1 261 5 view .LVU187
+ 262:Core/Src/motor.c ****     uint8_t data[8] = {0};
+ 703              		.loc 1 262 5 view .LVU188
+ 704              		.loc 1 262 13 is_stmt 0 view .LVU189
+ 705 0004 0023     		movs	r3, #0
+ 706 0006 0293     		str	r3, [sp, #8]
+ARM GAS  C:\Users\cks\AppData\Local\Temp\cc2HTUhg.s 			page 19
+
+
+ 707 0008 0393     		str	r3, [sp, #12]
+ 263:Core/Src/motor.c ****     uint32_t tx_mailbox;
+ 708              		.loc 1 263 5 is_stmt 1 view .LVU190
+ 264:Core/Src/motor.c ****     uint8_t i;
+ 709              		.loc 1 264 5 view .LVU191
+ 265:Core/Src/motor.c **** 
+ 266:Core/Src/motor.c ****     if (s_motor_count == 0U)
+ 710              		.loc 1 266 5 view .LVU192
+ 711              		.loc 1 266 23 is_stmt 0 view .LVU193
+ 712 000a 244B     		ldr	r3, .L76
+ 713 000c 1B78     		ldrb	r3, [r3]	@ zero_extendqisi2
+ 714              		.loc 1 266 8 view .LVU194
+ 715 000e 002B     		cmp	r3, #0
+ 716 0010 41D0     		beq	.L64
+ 267:Core/Src/motor.c ****     {
+ 268:Core/Src/motor.c ****         return;
+ 269:Core/Src/motor.c ****     }
+ 270:Core/Src/motor.c **** 
+ 271:Core/Src/motor.c ****     /* 把每个电机的电流按 ID 顺序填进 8 字节（大端序） */
+ 272:Core/Src/motor.c ****     for (i = 0U; i < MOTOR_COUNT; i++)
+ 717              		.loc 1 272 12 view .LVU195
+ 718 0012 0023     		movs	r3, #0
+ 719 0014 14E0     		b	.L65
+ 720              	.LVL51:
+ 721              	.L72:
+ 722              	.LBB2:
+ 723              	.LBB3:
+ 273:Core/Src/motor.c ****     {
+ 274:Core/Src/motor.c ****         Motor_t *motor = s_motor_map[i];
+ 275:Core/Src/motor.c ****         int16_t current = 0;
+ 276:Core/Src/motor.c **** 
+ 277:Core/Src/motor.c ****         if (motor != NULL)
+ 278:Core/Src/motor.c ****         {
+ 279:Core/Src/motor.c ****             float out = motor->out_current;
+ 280:Core/Src/motor.c **** 
+ 281:Core/Src/motor.c ****             /* 最后一道限幅，保证不超出 C620 允许范围 */
+ 282:Core/Src/motor.c ****             if (out > 16384.0f)
+ 283:Core/Src/motor.c ****             {
+ 284:Core/Src/motor.c ****                 out = 16384.0f;
+ 724              		.loc 1 284 21 view .LVU196
+ 725 0016 DFED227A 		vldr.32	s15, .L76+4
+ 726              	.LVL52:
+ 727              	.L68:
+ 285:Core/Src/motor.c ****             }
+ 286:Core/Src/motor.c ****             else if (out < -16384.0f)
+ 287:Core/Src/motor.c ****             {
+ 288:Core/Src/motor.c ****                 out = -16384.0f;
+ 289:Core/Src/motor.c ****             }
+ 290:Core/Src/motor.c **** 
+ 291:Core/Src/motor.c ****             current = (int16_t)out;
+ 728              		.loc 1 291 13 is_stmt 1 view .LVU197
+ 729              		.loc 1 291 21 is_stmt 0 view .LVU198
+ 730 001a FDEEE77A 		vcvt.s32.f32	s15, s15
+ 731              	.LVL53:
+ 732              		.loc 1 291 21 view .LVU199
+ 733 001e 17EE902A 		vmov	r2, s15	@ int
+ 734              	.LVL54:
+ARM GAS  C:\Users\cks\AppData\Local\Temp\cc2HTUhg.s 			page 20
+
+
+ 735              		.loc 1 291 21 view .LVU200
+ 736 0022 12B2     		sxth	r2, r2
+ 737              	.LVL55:
+ 738              	.L67:
+ 739              		.loc 1 291 21 view .LVU201
+ 740              	.LBE3:
+ 292:Core/Src/motor.c ****         }
+ 293:Core/Src/motor.c **** 
+ 294:Core/Src/motor.c ****         data[2U * i] = (uint8_t)((uint16_t)current >> 8);
+ 741              		.loc 1 294 9 is_stmt 1 view .LVU202
+ 742              		.loc 1 294 17 is_stmt 0 view .LVU203
+ 743 0024 5900     		lsls	r1, r3, #1
+ 744              		.loc 1 294 24 view .LVU204
+ 745 0026 C2F3072C 		ubfx	ip, r2, #8, #8
+ 746              		.loc 1 294 22 view .LVU205
+ 747 002a 0AA8     		add	r0, sp, #40
+ 748 002c 00EB4300 		add	r0, r0, r3, lsl #1
+ 749 0030 00F820CC 		strb	ip, [r0, #-32]
+ 295:Core/Src/motor.c ****         data[2U * i + 1U] = (uint8_t)((uint16_t)current & 0x00FFU);
+ 750              		.loc 1 295 9 is_stmt 1 view .LVU206
+ 751              		.loc 1 295 27 is_stmt 0 view .LVU207
+ 752 0034 2931     		adds	r1, r1, #41
+ 753 0036 6944     		add	r1, sp, r1
+ 754 0038 01F8202C 		strb	r2, [r1, #-32]
+ 755              	.LBE2:
+ 272:Core/Src/motor.c ****     {
+ 756              		.loc 1 272 36 is_stmt 1 discriminator 1 view .LVU208
+ 757 003c 0133     		adds	r3, r3, #1
+ 758              	.LVL56:
+ 272:Core/Src/motor.c ****     {
+ 759              		.loc 1 272 36 is_stmt 0 discriminator 1 view .LVU209
+ 760 003e DBB2     		uxtb	r3, r3
+ 761              	.LVL57:
+ 762              	.L65:
+ 272:Core/Src/motor.c ****     {
+ 763              		.loc 1 272 20 is_stmt 1 discriminator 2 view .LVU210
+ 764 0040 032B     		cmp	r3, #3
+ 765 0042 17D8     		bhi	.L75
+ 766              	.LBB5:
+ 274:Core/Src/motor.c ****         int16_t current = 0;
+ 767              		.loc 1 274 9 view .LVU211
+ 274:Core/Src/motor.c ****         int16_t current = 0;
+ 768              		.loc 1 274 18 is_stmt 0 view .LVU212
+ 769 0044 174A     		ldr	r2, .L76+8
+ 770 0046 52F82320 		ldr	r2, [r2, r3, lsl #2]
+ 771              	.LVL58:
+ 275:Core/Src/motor.c **** 
+ 772              		.loc 1 275 9 is_stmt 1 view .LVU213
+ 277:Core/Src/motor.c ****         {
+ 773              		.loc 1 277 9 view .LVU214
+ 277:Core/Src/motor.c ****         {
+ 774              		.loc 1 277 12 is_stmt 0 view .LVU215
+ 775 004a 002A     		cmp	r2, #0
+ 776 004c EAD0     		beq	.L67
+ 777              	.LBB4:
+ 279:Core/Src/motor.c **** 
+ 778              		.loc 1 279 13 is_stmt 1 view .LVU216
+ARM GAS  C:\Users\cks\AppData\Local\Temp\cc2HTUhg.s 			page 21
+
+
+ 279:Core/Src/motor.c **** 
+ 779              		.loc 1 279 19 is_stmt 0 view .LVU217
+ 780 004e D2ED1B7A 		vldr.32	s15, [r2, #108]
+ 781              	.LVL59:
+ 282:Core/Src/motor.c ****             {
+ 782              		.loc 1 282 13 is_stmt 1 view .LVU218
+ 282:Core/Src/motor.c ****             {
+ 783              		.loc 1 282 16 is_stmt 0 view .LVU219
+ 784 0052 9FED137A 		vldr.32	s14, .L76+4
+ 785 0056 F4EEC77A 		vcmpe.f32	s15, s14
+ 786 005a F1EE10FA 		vmrs	APSR_nzcv, FPSCR
+ 787 005e DADC     		bgt	.L72
+ 286:Core/Src/motor.c ****             {
+ 788              		.loc 1 286 18 is_stmt 1 view .LVU220
+ 286:Core/Src/motor.c ****             {
+ 789              		.loc 1 286 21 is_stmt 0 view .LVU221
+ 790 0060 9FED117A 		vldr.32	s14, .L76+12
+ 791 0064 F4EEC77A 		vcmpe.f32	s15, s14
+ 792 0068 F1EE10FA 		vmrs	APSR_nzcv, FPSCR
+ 793 006c D5D5     		bpl	.L68
+ 288:Core/Src/motor.c ****             }
+ 794              		.loc 1 288 21 view .LVU222
+ 795 006e DFED0E7A 		vldr.32	s15, .L76+12
+ 796              	.LVL60:
+ 288:Core/Src/motor.c ****             }
+ 797              		.loc 1 288 21 view .LVU223
+ 798 0072 D2E7     		b	.L68
+ 799              	.LVL61:
+ 800              	.L75:
+ 288:Core/Src/motor.c ****             }
+ 801              		.loc 1 288 21 view .LVU224
+ 802              	.LBE4:
+ 803              	.LBE5:
+ 296:Core/Src/motor.c ****     }
+ 297:Core/Src/motor.c **** 
+ 298:Core/Src/motor.c ****     tx_header.StdId = 0x200;
+ 804              		.loc 1 298 5 is_stmt 1 view .LVU225
+ 805              		.loc 1 298 21 is_stmt 0 view .LVU226
+ 806 0074 4FF40073 		mov	r3, #512
+ 807              	.LVL62:
+ 808              		.loc 1 298 21 view .LVU227
+ 809 0078 0493     		str	r3, [sp, #16]
+ 299:Core/Src/motor.c ****     tx_header.ExtId = 0U;
+ 810              		.loc 1 299 5 is_stmt 1 view .LVU228
+ 811              		.loc 1 299 21 is_stmt 0 view .LVU229
+ 812 007a 0023     		movs	r3, #0
+ 813 007c 0593     		str	r3, [sp, #20]
+ 300:Core/Src/motor.c ****     tx_header.IDE = CAN_ID_STD;
+ 814              		.loc 1 300 5 is_stmt 1 view .LVU230
+ 815              		.loc 1 300 19 is_stmt 0 view .LVU231
+ 816 007e 0693     		str	r3, [sp, #24]
+ 301:Core/Src/motor.c ****     tx_header.RTR = CAN_RTR_DATA;
+ 817              		.loc 1 301 5 is_stmt 1 view .LVU232
+ 818              		.loc 1 301 19 is_stmt 0 view .LVU233
+ 819 0080 0793     		str	r3, [sp, #28]
+ 302:Core/Src/motor.c ****     tx_header.DLC = 8U;
+ 820              		.loc 1 302 5 is_stmt 1 view .LVU234
+ARM GAS  C:\Users\cks\AppData\Local\Temp\cc2HTUhg.s 			page 22
+
+
+ 821              		.loc 1 302 19 is_stmt 0 view .LVU235
+ 822 0082 0822     		movs	r2, #8
+ 823 0084 0892     		str	r2, [sp, #32]
+ 303:Core/Src/motor.c ****     tx_header.TransmitGlobalTime = DISABLE;
+ 824              		.loc 1 303 5 is_stmt 1 view .LVU236
+ 825              		.loc 1 303 34 is_stmt 0 view .LVU237
+ 826 0086 8DF82430 		strb	r3, [sp, #36]
+ 304:Core/Src/motor.c **** 
+ 305:Core/Src/motor.c ****     (void)HAL_CAN_AddTxMessage(&hcan1, &tx_header, data, &tx_mailbox);
+ 827              		.loc 1 305 5 is_stmt 1 view .LVU238
+ 828              		.loc 1 305 11 is_stmt 0 view .LVU239
+ 829 008a 01AB     		add	r3, sp, #4
+ 830 008c 6A44     		add	r2, sp, r2
+ 831 008e 04A9     		add	r1, sp, #16
+ 832 0090 0648     		ldr	r0, .L76+16
+ 833 0092 FFF7FEFF 		bl	HAL_CAN_AddTxMessage
+ 834              	.LVL63:
+ 835              	.L64:
+ 306:Core/Src/motor.c **** }
+ 836              		.loc 1 306 1 view .LVU240
+ 837 0096 0BB0     		add	sp, sp, #44
+ 838              	.LCFI17:
+ 839              		.cfi_def_cfa_offset 4
+ 840              		@ sp needed
+ 841 0098 00BD     		pop	{pc}
+ 842              	.L77:
+ 843 009a 00BF     		.align	2
+ 844              	.L76:
+ 845 009c 00000000 		.word	s_motor_count
+ 846 00a0 00008046 		.word	1182793728
+ 847 00a4 00000000 		.word	s_motor_map
+ 848 00a8 000080C6 		.word	-964689920
+ 849 00ac 00000000 		.word	hcan1
+ 850              		.cfi_endproc
+ 851              	.LFE140:
+ 853              		.section	.text.HAL_CAN_RxFifo0MsgPendingCallback,"ax",%progbits
+ 854              		.align	1
+ 855              		.global	HAL_CAN_RxFifo0MsgPendingCallback
+ 856              		.syntax unified
+ 857              		.thumb
+ 858              		.thumb_func
+ 860              	HAL_CAN_RxFifo0MsgPendingCallback:
+ 861              	.LVL64:
+ 862              	.LFB141:
+ 307:Core/Src/motor.c **** 
+ 308:Core/Src/motor.c **** /**
+ 309:Core/Src/motor.c ****   * @brief  CAN FIFO0 接收中断回调（HAL 在 CAN1_RX0_IRQHandler 里调用）
+ 310:Core/Src/motor.c ****   * @note   一次中断可能积压多帧，这里循环把 FIFO 读空
+ 311:Core/Src/motor.c ****   */
+ 312:Core/Src/motor.c **** void HAL_CAN_RxFifo0MsgPendingCallback(CAN_HandleTypeDef *hcan)
+ 313:Core/Src/motor.c **** {
+ 863              		.loc 1 313 1 is_stmt 1 view -0
+ 864              		.cfi_startproc
+ 865              		@ args = 0, pretend = 0, frame = 40
+ 866              		@ frame_needed = 0, uses_anonymous_args = 0
+ 314:Core/Src/motor.c ****     CAN_RxHeaderTypeDef rx_header;
+ 867              		.loc 1 314 5 view .LVU242
+ARM GAS  C:\Users\cks\AppData\Local\Temp\cc2HTUhg.s 			page 23
+
+
+ 315:Core/Src/motor.c ****     uint8_t data[8];
+ 868              		.loc 1 315 5 view .LVU243
+ 316:Core/Src/motor.c ****     uint32_t pending;
+ 869              		.loc 1 316 5 view .LVU244
+ 317:Core/Src/motor.c **** 
+ 318:Core/Src/motor.c ****     if (hcan->Instance != CAN1)
+ 870              		.loc 1 318 5 view .LVU245
+ 871              		.loc 1 318 13 is_stmt 0 view .LVU246
+ 872 0000 0268     		ldr	r2, [r0]
+ 873              		.loc 1 318 8 view .LVU247
+ 874 0002 174B     		ldr	r3, .L90
+ 875 0004 9A42     		cmp	r2, r3
+ 876 0006 00D0     		beq	.L89
+ 877 0008 7047     		bx	lr
+ 878              	.L89:
+ 313:Core/Src/motor.c ****     CAN_RxHeaderTypeDef rx_header;
+ 879              		.loc 1 313 1 view .LVU248
+ 880 000a 10B5     		push	{r4, lr}
+ 881              	.LCFI18:
+ 882              		.cfi_def_cfa_offset 8
+ 883              		.cfi_offset 4, -8
+ 884              		.cfi_offset 14, -4
+ 885 000c 8AB0     		sub	sp, sp, #40
+ 886              	.LCFI19:
+ 887              		.cfi_def_cfa_offset 48
+ 888 000e 0446     		mov	r4, r0
+ 319:Core/Src/motor.c ****     {
+ 320:Core/Src/motor.c ****         return;
+ 321:Core/Src/motor.c ****     }
+ 322:Core/Src/motor.c **** 
+ 323:Core/Src/motor.c ****     pending = HAL_CAN_GetRxFifoFillLevel(hcan, CAN_RX_FIFO0);
+ 889              		.loc 1 323 5 is_stmt 1 view .LVU249
+ 890              		.loc 1 323 15 is_stmt 0 view .LVU250
+ 891 0010 0021     		movs	r1, #0
+ 892 0012 FFF7FEFF 		bl	HAL_CAN_GetRxFifoFillLevel
+ 893              	.LVL65:
+ 324:Core/Src/motor.c **** 
+ 325:Core/Src/motor.c ****     while (pending > 0U)
+ 894              		.loc 1 325 5 is_stmt 1 view .LVU251
+ 895              		.loc 1 325 11 is_stmt 0 view .LVU252
+ 896 0016 03E0     		b	.L81
+ 897              	.LVL66:
+ 898              	.L83:
+ 326:Core/Src/motor.c ****     {
+ 327:Core/Src/motor.c ****         if (HAL_CAN_GetRxMessage(hcan, CAN_RX_FIFO0, &rx_header, data) != HAL_OK)
+ 328:Core/Src/motor.c ****         {
+ 329:Core/Src/motor.c ****             break;
+ 330:Core/Src/motor.c ****         }
+ 331:Core/Src/motor.c **** 
+ 332:Core/Src/motor.c ****         /* 只处理 0x201~0x204 的标准帧 */
+ 333:Core/Src/motor.c ****         if ((rx_header.IDE == CAN_ID_STD) &&
+ 334:Core/Src/motor.c ****             (rx_header.StdId >= 0x201U) && (rx_header.StdId <= 0x204U))
+ 335:Core/Src/motor.c ****         {
+ 336:Core/Src/motor.c ****             uint8_t index = (uint8_t)(rx_header.StdId - 0x201U);
+ 337:Core/Src/motor.c **** 
+ 338:Core/Src/motor.c ****             if (s_motor_map[index] != NULL)
+ 339:Core/Src/motor.c ****             {
+ARM GAS  C:\Users\cks\AppData\Local\Temp\cc2HTUhg.s 			page 24
+
+
+ 340:Core/Src/motor.c ****                 Motor_OnFeedback(s_motor_map[index], data);
+ 341:Core/Src/motor.c ****             }
+ 342:Core/Src/motor.c ****         }
+ 343:Core/Src/motor.c **** 
+ 344:Core/Src/motor.c ****         pending = HAL_CAN_GetRxFifoFillLevel(hcan, CAN_RX_FIFO0);
+ 899              		.loc 1 344 9 is_stmt 1 view .LVU253
+ 900              		.loc 1 344 19 is_stmt 0 view .LVU254
+ 901 0018 0021     		movs	r1, #0
+ 902 001a 2046     		mov	r0, r4
+ 903 001c FFF7FEFF 		bl	HAL_CAN_GetRxFifoFillLevel
+ 904              	.LVL67:
+ 905              	.L81:
+ 325:Core/Src/motor.c ****     {
+ 906              		.loc 1 325 20 is_stmt 1 discriminator 1 view .LVU255
+ 907 0020 E0B1     		cbz	r0, .L78
+ 327:Core/Src/motor.c ****         {
+ 908              		.loc 1 327 9 view .LVU256
+ 327:Core/Src/motor.c ****         {
+ 909              		.loc 1 327 13 is_stmt 0 view .LVU257
+ 910 0022 01AB     		add	r3, sp, #4
+ 911 0024 03AA     		add	r2, sp, #12
+ 912 0026 0021     		movs	r1, #0
+ 913 0028 2046     		mov	r0, r4
+ 914              	.LVL68:
+ 327:Core/Src/motor.c ****         {
+ 915              		.loc 1 327 13 view .LVU258
+ 916 002a FFF7FEFF 		bl	HAL_CAN_GetRxMessage
+ 917              	.LVL69:
+ 327:Core/Src/motor.c ****         {
+ 918              		.loc 1 327 12 discriminator 1 view .LVU259
+ 919 002e A8B9     		cbnz	r0, .L78
+ 333:Core/Src/motor.c ****             (rx_header.StdId >= 0x201U) && (rx_header.StdId <= 0x204U))
+ 920              		.loc 1 333 9 is_stmt 1 view .LVU260
+ 333:Core/Src/motor.c ****             (rx_header.StdId >= 0x201U) && (rx_header.StdId <= 0x204U))
+ 921              		.loc 1 333 23 is_stmt 0 view .LVU261
+ 922 0030 059B     		ldr	r3, [sp, #20]
+ 333:Core/Src/motor.c ****             (rx_header.StdId >= 0x201U) && (rx_header.StdId <= 0x204U))
+ 923              		.loc 1 333 12 view .LVU262
+ 924 0032 002B     		cmp	r3, #0
+ 925 0034 F0D1     		bne	.L83
+ 334:Core/Src/motor.c ****         {
+ 926              		.loc 1 334 23 view .LVU263
+ 927 0036 039B     		ldr	r3, [sp, #12]
+ 333:Core/Src/motor.c ****             (rx_header.StdId >= 0x201U) && (rx_header.StdId <= 0x204U))
+ 928              		.loc 1 333 43 discriminator 1 view .LVU264
+ 929 0038 B3F5007F 		cmp	r3, #512
+ 930 003c ECD9     		bls	.L83
+ 334:Core/Src/motor.c ****         {
+ 931              		.loc 1 334 41 discriminator 1 view .LVU265
+ 932 003e B3F5017F 		cmp	r3, #516
+ 933 0042 E9D8     		bhi	.L83
+ 934              	.LBB6:
+ 336:Core/Src/motor.c **** 
+ 935              		.loc 1 336 13 is_stmt 1 view .LVU266
+ 336:Core/Src/motor.c **** 
+ 936              		.loc 1 336 29 is_stmt 0 view .LVU267
+ 937 0044 DBB2     		uxtb	r3, r3
+ARM GAS  C:\Users\cks\AppData\Local\Temp\cc2HTUhg.s 			page 25
+
+
+ 336:Core/Src/motor.c **** 
+ 938              		.loc 1 336 21 view .LVU268
+ 939 0046 013B     		subs	r3, r3, #1
+ 940 0048 DBB2     		uxtb	r3, r3
+ 941              	.LVL70:
+ 338:Core/Src/motor.c ****             {
+ 942              		.loc 1 338 13 is_stmt 1 view .LVU269
+ 338:Core/Src/motor.c ****             {
+ 943              		.loc 1 338 28 is_stmt 0 view .LVU270
+ 944 004a 064A     		ldr	r2, .L90+4
+ 945 004c 52F82300 		ldr	r0, [r2, r3, lsl #2]
+ 338:Core/Src/motor.c ****             {
+ 946              		.loc 1 338 16 view .LVU271
+ 947 0050 0028     		cmp	r0, #0
+ 948 0052 E1D0     		beq	.L83
+ 340:Core/Src/motor.c ****             }
+ 949              		.loc 1 340 17 is_stmt 1 view .LVU272
+ 950 0054 01A9     		add	r1, sp, #4
+ 951 0056 FFF7FEFF 		bl	Motor_OnFeedback
+ 952              	.LVL71:
+ 340:Core/Src/motor.c ****             }
+ 953              		.loc 1 340 17 is_stmt 0 view .LVU273
+ 954 005a DDE7     		b	.L83
+ 955              	.LVL72:
+ 956              	.L78:
+ 340:Core/Src/motor.c ****             }
+ 957              		.loc 1 340 17 view .LVU274
+ 958              	.LBE6:
+ 345:Core/Src/motor.c ****     }
+ 346:Core/Src/motor.c **** }
+ 959              		.loc 1 346 1 view .LVU275
+ 960 005c 0AB0     		add	sp, sp, #40
+ 961              	.LCFI20:
+ 962              		.cfi_def_cfa_offset 8
+ 963              		@ sp needed
+ 964 005e 10BD     		pop	{r4, pc}
+ 965              	.LVL73:
+ 966              	.L91:
+ 967              		.loc 1 346 1 view .LVU276
+ 968              		.align	2
+ 969              	.L90:
+ 970 0060 00640040 		.word	1073767424
+ 971 0064 00000000 		.word	s_motor_map
+ 972              		.cfi_endproc
+ 973              	.LFE141:
+ 975              		.section	.bss.s_motor_count,"aw",%nobits
+ 978              	s_motor_count:
+ 979 0000 00       		.space	1
+ 980              		.section	.bss.s_motor_map,"aw",%nobits
+ 981              		.align	2
+ 984              	s_motor_map:
+ 985 0000 00000000 		.space	16
+ 985      00000000 
+ 985      00000000 
+ 985      00000000 
+ 986              		.text
+ 987              	.Letext0:
+ARM GAS  C:\Users\cks\AppData\Local\Temp\cc2HTUhg.s 			page 26
+
+
+ 988              		.file 2 "C:/msys64/ucrt64/arm-none-eabi/include/machine/_default_types.h"
+ 989              		.file 3 "C:/msys64/ucrt64/arm-none-eabi/include/sys/_stdint.h"
+ 990              		.file 4 "Core/Inc/pid.h"
+ 991              		.file 5 "Core/Inc/motor.h"
+ 992              		.file 6 "Drivers/CMSIS/Device/ST/STM32F4xx/Include/stm32f407xx.h"
+ 993              		.file 7 "Drivers/CMSIS/Device/ST/STM32F4xx/Include/stm32f4xx.h"
+ 994              		.file 8 "Drivers/STM32F4xx_HAL_Driver/Inc/stm32f4xx_hal_def.h"
+ 995              		.file 9 "Drivers/STM32F4xx_HAL_Driver/Inc/stm32f4xx_hal_can.h"
+ 996              		.file 10 "Drivers/STM32F4xx_HAL_Driver/Inc/stm32f4xx_hal_cortex.h"
+ 997              		.file 11 "C:/msys64/ucrt64/arm-none-eabi/include/string.h"
+ 998              		.file 12 "Core/Inc/can.h"
+ 999              		.file 13 "Core/Inc/main.h"
+ 1000              		.file 14 "Drivers/STM32F4xx_HAL_Driver/Inc/stm32f4xx_hal.h"
+ 1001              		.file 15 "<built-in>"
+ARM GAS  C:\Users\cks\AppData\Local\Temp\cc2HTUhg.s 			page 27
+
+
+DEFINED SYMBOLS
+                            *ABS*:00000000 motor.c
+C:\Users\cks\AppData\Local\Temp\cc2HTUhg.s:21     .text.Motor_Init:00000000 $t
+C:\Users\cks\AppData\Local\Temp\cc2HTUhg.s:27     .text.Motor_Init:00000000 Motor_Init
+C:\Users\cks\AppData\Local\Temp\cc2HTUhg.s:126    .text.Motor_Init:00000078 $d
+C:\Users\cks\AppData\Local\Temp\cc2HTUhg.s:984    .bss.s_motor_map:00000000 s_motor_map
+C:\Users\cks\AppData\Local\Temp\cc2HTUhg.s:978    .bss.s_motor_count:00000000 s_motor_count
+C:\Users\cks\AppData\Local\Temp\cc2HTUhg.s:139    .text.Motor_SetTarget:00000000 $t
+C:\Users\cks\AppData\Local\Temp\cc2HTUhg.s:145    .text.Motor_SetTarget:00000000 Motor_SetTarget
+C:\Users\cks\AppData\Local\Temp\cc2HTUhg.s:189    .text.Motor_SetTarget:00000030 $d
+C:\Users\cks\AppData\Local\Temp\cc2HTUhg.s:195    .text.Motor_OnFeedback:00000000 $t
+C:\Users\cks\AppData\Local\Temp\cc2HTUhg.s:201    .text.Motor_OnFeedback:00000000 Motor_OnFeedback
+C:\Users\cks\AppData\Local\Temp\cc2HTUhg.s:362    .text.Motor_OnFeedback:00000098 $d
+C:\Users\cks\AppData\Local\Temp\cc2HTUhg.s:368    .text.Motor_IsOnline:00000000 $t
+C:\Users\cks\AppData\Local\Temp\cc2HTUhg.s:374    .text.Motor_IsOnline:00000000 Motor_IsOnline
+C:\Users\cks\AppData\Local\Temp\cc2HTUhg.s:431    .text.Motor_Update:00000000 $t
+C:\Users\cks\AppData\Local\Temp\cc2HTUhg.s:437    .text.Motor_Update:00000000 Motor_Update
+C:\Users\cks\AppData\Local\Temp\cc2HTUhg.s:558    .text.Motor_Update:00000090 $d
+C:\Users\cks\AppData\Local\Temp\cc2HTUhg.s:564    .text.Motor_CAN_Init:00000000 $t
+C:\Users\cks\AppData\Local\Temp\cc2HTUhg.s:570    .text.Motor_CAN_Init:00000000 Motor_CAN_Init
+C:\Users\cks\AppData\Local\Temp\cc2HTUhg.s:678    .text.Motor_CAN_Init:00000068 $d
+C:\Users\cks\AppData\Local\Temp\cc2HTUhg.s:683    .text.Motor_SendAll:00000000 $t
+C:\Users\cks\AppData\Local\Temp\cc2HTUhg.s:689    .text.Motor_SendAll:00000000 Motor_SendAll
+C:\Users\cks\AppData\Local\Temp\cc2HTUhg.s:845    .text.Motor_SendAll:0000009c $d
+C:\Users\cks\AppData\Local\Temp\cc2HTUhg.s:854    .text.HAL_CAN_RxFifo0MsgPendingCallback:00000000 $t
+C:\Users\cks\AppData\Local\Temp\cc2HTUhg.s:860    .text.HAL_CAN_RxFifo0MsgPendingCallback:00000000 HAL_CAN_RxFifo0MsgPendingCallback
+C:\Users\cks\AppData\Local\Temp\cc2HTUhg.s:970    .text.HAL_CAN_RxFifo0MsgPendingCallback:00000060 $d
+C:\Users\cks\AppData\Local\Temp\cc2HTUhg.s:979    .bss.s_motor_count:00000000 $d
+C:\Users\cks\AppData\Local\Temp\cc2HTUhg.s:981    .bss.s_motor_map:00000000 $d
+
+UNDEFINED SYMBOLS
+memset
+PID_Init
+HAL_GetTick
+PID_Reset
+PID_Calc
+HAL_CAN_ConfigFilter
+HAL_CAN_Start
+HAL_CAN_ActivateNotification
+HAL_NVIC_SetPriority
+HAL_NVIC_EnableIRQ
+Error_Handler
+hcan1
+HAL_CAN_AddTxMessage
+HAL_CAN_GetRxFifoFillLevel
+HAL_CAN_GetRxMessage

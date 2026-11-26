@@ -1,0 +1,38 @@
+{
+  // 调试器：DAPLink / 无线调试器（CMSIS-DAP）
+  // 传输方式、速度、目标芯片都写在工程根目录的 daplink.cfg 里。
+  "version": "0.2.0",
+  "configurations": [
+    {
+      "name": "Debug (DAPLink)",
+      "type": "cortex-debug",
+      "request": "launch",
+      "cwd": "${workspaceFolder}",
+      "executable": "${workspaceFolder}/build/3508pidd.elf",
+      "servertype": "openocd",
+      "serverpath": "C:/msys64/ucrt64/bin/openocd.exe",
+      "gdbPath": "C:/msys64/ucrt64/bin/gdb-multiarch.exe",
+      "configFiles": [
+        "${workspaceFolder}/daplink.cfg"
+      ],
+      "device": "STM32F407IG",
+      "runToEntryPoint": "main",
+      "preLaunchTask": "build",
+      "showDevDebugOutput": "none"
+    },
+    {
+      "name": "Attach (DAPLink)",
+      "type": "cortex-debug",
+      "request": "attach",
+      "cwd": "${workspaceFolder}",
+      "executable": "${workspaceFolder}/build/3508pidd.elf",
+      "servertype": "openocd",
+      "serverpath": "C:/msys64/ucrt64/bin/openocd.exe",
+      "gdbPath": "C:/msys64/ucrt64/bin/gdb-multiarch.exe",
+      "configFiles": [
+        "${workspaceFolder}/daplink.cfg"
+      ],
+      "device": "STM32F407IG"
+    }
+  ]
+}

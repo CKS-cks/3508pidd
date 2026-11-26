@@ -1,0 +1,73 @@
+{
+  // 本工程是 CubeMX 生成的 Makefile 工程（TARGET = 3508pidd），
+  // 所以构建任务直接用 make，不再走 tools\build.ps1。
+  "version": "2.0.0",
+  "tasks": [
+    {
+      "label": "build",
+      "type": "shell",
+      "command": "C:/msys64/ucrt64/bin/make.exe",
+      "args": ["-j8"],
+      "group": {
+        "kind": "build",
+        "isDefault": true
+      },
+      "problemMatcher": {
+        "base": "$gcc",
+        "fileLocation": ["relative", "${workspaceFolder}"]
+      },
+      "presentation": {
+        "reveal": "always",
+        "clear": true,
+        "panel": "shared"
+      }
+    },
+    {
+      // CubeMX 的 clean 用的是 rm -rf，PowerShell 里没有 rm，所以这里直接删目录
+      "label": "rebuild",
+      "type": "shell",
+      "command": "powershell",
+      "args": [
+        "-NoProfile",
+        "-Command",
+        "if (Test-Path build) { Remove-Item -Recurse -Force build }; & 'C:/msys64/ucrt64/bin/make.exe' -j8"
+      ],
+      "group": "build",
+      "problemMatcher": {
+        "base": "$gcc",
+        "fileLocation": ["relative", "${workspaceFolder}"]
+      },
+      "presentation": {
+        "reveal": "always",
+        "clear": true,
+        "panel": "shared"
+      }
+    },
+    {
+      "label": "clean",
+      "type": "shell",
+      "command": "powershell",
+      "args": [
+        "-NoProfile",
+        "-Command",
+        "if (Test-Path build) { Remove-Item -Recurse -Force build }"
+      ],
+      "problemMatcher": []
+    },
+    {
+      "label": "flash (DAPLink)",
+      "type": "shell",
+      "command": "C:/msys64/ucrt64/bin/openocd.exe",
+      "args": [
+        "-f", "daplink.cfg",
+        "-c", "program build/3508pidd.elf verify reset exit"
+      ],
+      "dependsOn": "build",
+      "problemMatcher": [],
+      "presentation": {
+        "reveal": "always",
+        "panel": "shared"
+      }
+    }
+  ]
+}
